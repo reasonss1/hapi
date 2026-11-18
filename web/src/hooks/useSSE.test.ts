@@ -75,6 +75,65 @@ function renderUseSSE(options?: {
     return { ...hook, queryClient }
 }
 
+describe('useSSE machine management updates', () => {
+    beforeEach(() => {
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+        window.localStorage.clear()
+    })
+
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('removes a machine deleted by another client and forgets only its browser state', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const managementKey = [...queryKeys.machines, 'management']
+        const machines = [{ id: 'deleted' }, { id: 'keep' }]
+        queryClient.setQueryData(queryKeys.machines, { machines })
+        queryClient.setQueryData(managementKey, { machines })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+        window.localStorage.setItem('hapi-machine-labels', JSON.stringify({ deleted: 'Old device', keep: 'Keep device' }))
+        window.localStorage.setItem('hapi-session-list-machine-filter', 'deleted')
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({ type: 'machine-updated', machineId: 'deleted', data: null }))
+
+        expect(queryClient.getQueryData(queryKeys.machines)).toEqual({ machines: [{ id: 'keep' }] })
+        expect(queryClient.getQueryData(managementKey)).toEqual({ machines: [{ id: 'keep' }] })
+        expect(JSON.parse(window.localStorage.getItem('hapi-machine-labels')!)).toEqual({ keep: 'Keep device' })
+        expect(window.localStorage.getItem('hapi-session-list-machine-filter')).toBeNull()
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: managementKey })
+        unmount()
+    })
+
+    it('refreshes session-only machines and their counts when a session is removed', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const managementKey = [...queryKeys.machines, 'management']
+        queryClient.setQueryData(managementKey, { machines: [{ id: 'ghost', sessionOnly: true, sessionCount: 1 }] })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({ type: 'session-removed', sessionId: 'old-session' }))
+
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: managementKey })
+        expect(queryClient.getQueryState(managementKey)?.isInvalidated).toBe(true)
+        unmount()
+    })
+
+    it('keeps offline machines and their cached names until the management list is refreshed', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const managementKey = [...queryKeys.machines, 'management']
+        queryClient.setQueryData(queryKeys.machines, { machines: [{ id: 'offline' }] })
+        queryClient.setQueryData(managementKey, { machines: [{ id: 'offline' }] })
+        window.localStorage.setItem('hapi-machine-labels', JSON.stringify({ offline: 'Offline device' }))
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({ type: 'machine-updated', machineId: 'offline', data: { active: false } }))
+
+        expect(queryClient.getQueryData(queryKeys.machines)).toEqual({ machines: [] })
+        expect(queryClient.getQueryData(managementKey)).toEqual({ machines: [{ id: 'offline' }] })
+        expect(queryClient.getQueryState(managementKey)?.isInvalidated).toBe(true)
+        expect(JSON.parse(window.localStorage.getItem('hapi-machine-labels')!)).toEqual({ offline: 'Offline device' })
+        unmount()
+    })
+})
+
 describe('useSSE connection liveness (mobile suspend/resume)', () => {
     beforeEach(() => {
         vi.useFakeTimers()

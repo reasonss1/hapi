@@ -54,6 +54,27 @@ describe('ApiClient error mapping', () => {
         globalThis.fetch = originalFetch
     })
 
+    it('requests offline machines only when the management list opts in', async () => {
+        fetchMock.mockImplementation(async () => new Response(JSON.stringify({ machines: [] }), { status: 200 }))
+        const api = new ApiClient('test-token')
+
+        await api.getMachines()
+        await api.getMachines({ includeOffline: true })
+
+        expect(fetchMock.mock.calls[0][0]).toBe('/api/machines')
+        expect(fetchMock.mock.calls[1][0]).toBe('/api/machines?includeOffline=1')
+    })
+
+    it('deletes only the encoded target machine and returns its deletion result', async () => {
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, deletedSessions: 2 }), { status: 200 }))
+        const api = new ApiClient('test-token')
+
+        await expect(api.deleteMachine('machine /?#')).resolves.toEqual({ ok: true, deletedSessions: 2 })
+
+        expect(fetchMock.mock.calls[0][0]).toBe('/api/machines/machine%20%2F%3F%23')
+        expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'DELETE' })
+    })
+
     it('passes cancellation through to session file search', async () => {
         const controller = new AbortController()
         fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {

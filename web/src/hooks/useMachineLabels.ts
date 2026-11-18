@@ -41,6 +41,12 @@ function writeCachedLabels(labels: Record<string, string>): void {
     }
 }
 
+export function forgetMachineLabel(machineId: string): void {
+    const labels = readCachedLabels()
+    delete labels[machineId]
+    writeCachedLabels(labels)
+}
+
 /**
  * Machine id → display label for the session list. Live data from the
  * machines query wins, but labels are also cached in localStorage so a

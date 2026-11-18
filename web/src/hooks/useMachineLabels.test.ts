@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import type { Machine } from '@/types/api'
-import { getMachineTitle, useMachineLabels } from './useMachineLabels'
+import { forgetMachineLabel, getMachineTitle, useMachineLabels } from './useMachineLabels'
 
 function makeMachine(id: string, metadata: Machine['metadata']): Machine {
     return {
@@ -45,6 +45,16 @@ describe('useMachineLabels', () => {
         const { result } = renderHook(() => useMachineLabels([]))
 
         expect(result.current['gone-machine']).toBe('MacBook Pro')
+    })
+
+    it('forgets only the explicitly deleted machine label', () => {
+        window.localStorage.setItem('hapi-machine-labels', JSON.stringify({ deleted: 'Old device', other: 'Keep device' }))
+
+        forgetMachineLabel('deleted')
+
+        const { result } = renderHook(() => useMachineLabels([]))
+        expect(result.current).toEqual({ other: 'Keep device' })
+        expect(JSON.parse(window.localStorage.getItem('hapi-machine-labels')!)).toEqual({ other: 'Keep device' })
     })
 
     it('prefers the live title over a stale cached one', () => {

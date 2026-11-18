@@ -1158,8 +1158,15 @@ export class ApiClient {
         })
     }
 
-    async getMachines(): Promise<MachinesResponse> {
-        return await this.request<MachinesResponse>('/api/machines')
+    async getMachines(options?: { includeOffline?: boolean }): Promise<MachinesResponse> {
+        const query = options?.includeOffline ? '?includeOffline=1' : ''
+        return await this.request<MachinesResponse>(`/api/machines${query}`)
+    }
+
+    async deleteMachine(machineId: string): Promise<{ ok: true; deletedSessions: number }> {
+        return await this.request(`/api/machines/${encodeURIComponent(machineId)}`, {
+            method: 'DELETE',
+        })
     }
 
     /** Pass an empty string to clear the custom name and fall back to the hostname. */

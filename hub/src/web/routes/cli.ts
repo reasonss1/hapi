@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { MachineDeletionError } from '../../sync/machineDeletionError'
 import { z } from 'zod'
 import {
     CreateOrLoadMachineRequestSchema,
@@ -69,6 +70,13 @@ function clearErrorStatus(code: string): 403 | 404 | 409 | 500 {
 
 export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<CliEnv> {
     const app = new Hono<CliEnv>()
+    app.onError((error, c) => {
+        if (error instanceof MachineDeletionError) {
+            return c.json({ error: error.message, code: error.code }, error.status)
+        }
+        console.error(error)
+        return c.json({ error: 'Internal server error' }, 500)
+    })
 
     app.use('*', async (c, next) => {
         c.header('X-Hapi-Protocol-Version', String(PROTOCOL_VERSION))

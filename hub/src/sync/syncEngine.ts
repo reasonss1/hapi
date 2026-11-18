@@ -85,6 +85,7 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 import { ArchiveCleanupError } from './archiveCleanupError'
+import { MachineDeletionError } from './machineDeletionError'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
@@ -219,7 +220,26 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
     return extractUserMessageText(message.content)
 }
 
+export type MachineManagementRecord = Machine & { sessionOnly?: boolean; sessionCount: number }
+
 export class SyncEngine {
+    private readonly machineDeletions = new Set<string>()
+
+    private machineDeletionKey(machineId: string, namespace: string): string {
+        return JSON.stringify([namespace, machineId])
+    }
+
+    private assertMachineNotDeleting(machineId: string | undefined, namespace: string): void {
+        if (machineId && this.machineDeletions.has(this.machineDeletionKey(machineId, namespace))) {
+            throw new MachineDeletionError('Device cleanup is in progress; retry after it finishes.', 409, 'machine_cleanup_in_progress')
+        }
+    }
+
+    private assertSessionMachineNotDeleting(metadata: unknown, namespace: string): void {
+        const value = asRecord(metadata)
+        this.assertMachineNotDeleting(typeof value?.machineId === 'string' ? value.machineId : undefined, namespace)
+    }
+
     private readonly archiveRequests = new Map<string, Promise<void>>()
     // KillSession's beforeKill drain completes before the CLI's async cleanup
     // closes the session socket, so a runner prepare-stop that loses that race
@@ -667,6 +687,138 @@ export class SyncEngine {
 
     getOnlineMachinesByNamespace(namespace: string): Machine[] {
         return this.machineCache.getOnlineMachinesByNamespace(namespace)
+    }
+
+    getMachinesForManagement(namespace: string): MachineManagementRecord[] {
+        const machines = new Map<string, MachineManagementRecord>()
+        for (const stored of this.store.machines.getMachinesByNamespace(namespace)) {
+            const machine = this.machineCache.getMachineByNamespace(stored.id, namespace)
+                ?? this.machineCache.refreshMachine(stored.id)
+            if (machine?.namespace === namespace) machines.set(machine.id, { ...machine, sessionCount: 0 })
+        }
+        for (const session of this.getSessionsByNamespace(namespace)) {
+            const machineId = session.metadata?.machineId
+            if (!machineId) continue
+            let machine = machines.get(machineId)
+            if (!machine) {
+                machine = {
+                    id: machineId, namespace, seq: 0,
+                    createdAt: session.createdAt, updatedAt: session.updatedAt,
+                    active: false, activeAt: 0,
+                    metadata: { host: session.metadata?.host ?? machineId, platform: 'unknown', happyCliVersion: '' },
+                    metadataVersion: 0, runnerState: null, runnerStateVersion: 0,
+                    sessionOnly: true, sessionCount: 0
+                }
+                machines.set(machineId, machine)
+            }
+            machine.sessionCount++
+        }
+        return Array.from(machines.values())
+    }
+
+    async deleteMachine(machineId: string, namespace: string): Promise<{ ok: true; deletedSessions: number }> {
+        this.assertMachineNotDeleting(machineId, namespace)
+        const associated = () => this.getSessionsByNamespace(namespace)
+            .filter(session => session.metadata?.machineId === machineId)
+        const machine = this.machineCache.getMachineByNamespace(machineId, namespace)
+            ?? this.store.machines.getMachineByNamespace(machineId, namespace)
+        if (!machine && associated().length === 0) {
+            throw new MachineDeletionError('Device not found', 404, 'machine_not_found')
+        }
+        const key = this.machineDeletionKey(machineId, namespace)
+        this.machineDeletions.add(key)
+        const checkDeletable = (session: Session) => {
+            if (session.metadata?.codexResumePending && session.metadata.codexResumePending.machineId !== machineId) {
+                throw new MachineDeletionError('A pending session startup targets another device; reconcile it before cleanup.', 409, 'machine_session_owner_mismatch')
+            }
+            if (this.openCodeRewindPending(session.id) || this.archivedForkPending(session.id)
+                || this.historyActionsInFlight.has(session.id) || this.resumeTails.has(session.id)
+                || this.reopenTails.has(session.id) || this.store.sessionJobs.getPrimaryRunning(session.id)) {
+                throw new MachineDeletionError('A device session has an operation or attached job in progress. Finish it and retry.', 409, 'machine_sessions_busy')
+            }
+        }
+        try {
+            for (const session of associated()) {
+                checkDeletable(session)
+                const owner = this.machineCache.getMachine(machineId) ?? this.store.machines.getMachine(machineId)
+                if (owner && owner.namespace !== namespace
+                    && (session.active || isLiveLifecycleState(session.metadata?.lifecycleState) || session.metadata?.codexResumePending)) {
+                    throw new MachineDeletionError('The session device belongs to another namespace; cleanup cannot safely stop it.', 409, 'machine_session_owner_mismatch')
+                }
+            }
+            // Archive while the runner is still reachable: it verifies the exact
+            // session process tree before we stop the runner's control channel.
+            for (const snapshot of associated()) {
+                const session = this.getSessionByNamespace(snapshot.id, namespace)
+                if (!session || session.metadata?.machineId !== machineId) {
+                    throw new MachineDeletionError('Session device changed during cleanup; retry.', 409, 'machine_session_owner_mismatch')
+                }
+                checkDeletable(session)
+                if (session.active || isLiveLifecycleState(session.metadata?.lifecycleState)
+                    || session.metadata?.codexResumePending) {
+                    if (!machine) {
+                        throw new MachineDeletionError('Reconnect the session device before confirming its process shutdown.', 503, 'machine_runner_unavailable')
+                    }
+                    await this.archiveSession(session.id, { machineId, namespace })
+                    const runnerOwned = session.metadata?.startedBy === 'runner'
+                        || session.metadata?.startedFromRunner === true || Boolean(session.metadata?.codexResumePending)
+                    if (!runnerOwned) {
+                        // Ordinary archive accepts an unreachable terminal CLI.
+                        // Device deletion additionally needs exit proof before
+                        // removing its only Hub record. A PID-only tombstone
+                        // checks absence and never kills an unrelated live PID.
+                        let status = await this.rpcGateway.stopRunnerSession(machineId, session.id)
+                        const pid = session.metadata?.hostPid
+                        if (status === 'unknown' && typeof pid === 'number' && pid > 0) {
+                            status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${pid}`)
+                        }
+                        if (status === 'unknown' || status === 'still_alive') {
+                            throw new MachineDeletionError('Session process exit is not confirmed. Stop it and retry.', 409, 'machine_sessions_active')
+                        }
+                    }
+                }
+            }
+            const runnerSocket = machine ? this.rpcGateway.getMachineRunnerSocketId(machineId) : null
+            if (runnerSocket) {
+                await this.rpcGateway.stopRunner(machineId)
+                const deadline = performance.now() + 15_000
+                while (this.rpcGateway.getMachineRunnerSocketId(machineId)) {
+                    if (this.rpcGateway.getMachineRunnerSocketId(machineId) !== runnerSocket) {
+                        throw new MachineDeletionError('Runner reconnected during cleanup. Stop its supervisor and retry.', 409, 'machine_runner_reconnected')
+                    }
+                    if (performance.now() >= deadline) {
+                        throw new MachineDeletionError('Runner has not confirmed shutdown. Retry after it stops.', 503, 'machine_runner_stop_unconfirmed')
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 100))
+                }
+            } else if (this.machineCache.getMachineByNamespace(machineId, namespace)?.active) {
+                throw new MachineDeletionError('Runner control channel is unavailable. Reconnect or stop the runner, then retry.', 503, 'machine_runner_unavailable')
+            }
+            const sessions = associated()
+            for (const session of sessions) {
+                checkDeletable(session)
+                if (session.active || isLiveLifecycleState(session.metadata?.lifecycleState) || session.metadata?.codexResumePending) {
+                    throw new MachineDeletionError('A device session is still active. Retry after its shutdown is confirmed.', 409, 'machine_sessions_active')
+                }
+            }
+            // Start all synchronous SQLite/cache removals in this turn so a new
+            // request cannot run between the final checks and the deletions.
+            await Promise.all(sessions.map(session => this.deleteSession(session.id)))
+            if (associated().length > 0 || (machine && this.rpcGateway.getMachineRunnerSocketId(machineId))) {
+                throw new MachineDeletionError('Device reconnected during cleanup. Stop the runner and retry.', 409, 'machine_runner_reconnected')
+            }
+            this.machineCache.deleteMachine(machineId, namespace)
+            this.modelListCache.release(machineId)
+            return { ok: true, deletedSessions: sessions.length }
+        } catch (error) {
+            if (error instanceof MachineDeletionError || error instanceof ArchiveCleanupError) throw error
+            if (error instanceof RpcTargetMissingError || error instanceof RunnerStopRpcError) {
+                throw new MachineDeletionError('Runner could not confirm cleanup. Reconnect it and retry.', 503, 'machine_runner_unavailable')
+            }
+            throw new MachineDeletionError(error instanceof Error ? error.message : 'Device cleanup could not be confirmed.', 409, 'machine_cleanup_unconfirmed')
+        } finally {
+            this.machineDeletions.delete(key)
+        }
     }
 
     async renameMachine(machineId: string, displayName: string): Promise<void> {
@@ -1916,6 +2068,8 @@ export class SyncEngine {
         modelReasoningEffort?: string,
         requestedId?: string
     ): Session {
+        this.assertSessionMachineNotDeleting(metadata, namespace)
+        if (requestedId) this.assertSessionMachineNotDeleting(this.getSessionByNamespace(requestedId, namespace)?.metadata, namespace)
         return this.sessionCache.getOrCreateSession(
             tag,
             metadata,
@@ -1938,6 +2092,8 @@ export class SyncEngine {
         effort?: string,
         modelReasoningEffort?: string
     ): Session {
+        this.assertSessionMachineNotDeleting(metadata, namespace)
+        this.assertSessionMachineNotDeleting(this.getSessionByNamespace(id, namespace)?.metadata, namespace)
         return this.sessionCache.adoptPreallocatedSession(
             id,
             tag,
@@ -1951,6 +2107,7 @@ export class SyncEngine {
     }
 
     getOrCreateMachine(id: string, metadata: unknown, runnerState: unknown, namespace: string): Machine {
+        this.assertMachineNotDeleting(id, namespace)
         return this.machineCache.getOrCreateMachine(id, metadata, runnerState, namespace)
     }
 
@@ -3060,11 +3217,11 @@ export class SyncEngine {
         return 'ready'
     }
 
-    async archiveSession(sessionId: string): Promise<void> {
+    async archiveSession(sessionId: string, expectedMachine?: { machineId: string; namespace: string }): Promise<void> {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const existing = this.archiveRequests.get(sessionId)
         if (existing) return existing
-        const operation = this.archiveSessionOnce(sessionId)
+        const operation = this.archiveSessionOnce(sessionId, expectedMachine)
         this.archiveRequests.set(sessionId, operation)
         try { await operation } finally {
             if (this.archiveRequests.get(sessionId) === operation) this.archiveRequests.delete(sessionId)
@@ -3072,22 +3229,34 @@ export class SyncEngine {
         }
     }
 
-    private async archiveSessionOnce(sessionId: string): Promise<void> {
+    private async archiveSessionOnce(sessionId: string, expectedMachine?: { machineId: string; namespace: string }): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
             throw new Error('Archived fork is in progress; retry the fork to reconcile it before archiving')
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            await this.archiveSessionUnlocked(sessionId)
+            await this.archiveSessionUnlocked(sessionId, expectedMachine)
         } finally { this.historyActionsInFlight.delete(sessionId) }
     }
 
-    private async archiveSessionUnlocked(sessionId: string): Promise<void> {
+    private async archiveSessionUnlocked(sessionId: string, expectedMachine?: { machineId: string; namespace: string }): Promise<void> {
+        const assertExpectedMachine = () => {
+            if (!expectedMachine) return
+            const current = this.getSessionByNamespace(sessionId, expectedMachine.namespace)
+            const owner = this.store.machines.getMachine(expectedMachine.machineId)
+            if (!current || current.metadata?.machineId !== expectedMachine.machineId
+                || (current.metadata.codexResumePending && current.metadata.codexResumePending.machineId !== expectedMachine.machineId)
+                || owner?.namespace !== expectedMachine.namespace) {
+                throw new MachineDeletionError('Session device changed during cleanup; no further machine RPC was sent.', 409, 'machine_session_owner_mismatch')
+            }
+        }
+        assertExpectedMachine()
         // Windows may need longer than the ordinary 30s RPC timeout to prove a
         // complete tree exited. All PID fallbacks share this bounded operation
         // budget; an acknowledgement timeout must never become archive success.
         const deadline = performance.now() + 90_000
         const stopRunner = async (machineId: string, id: string, processStartMarker?: string) => {
+            assertExpectedMachine()
             const timeoutMs = Math.ceil(deadline - performance.now())
             if (timeoutMs <= 0) throw new ArchiveCleanupError('timeout')
             try {
@@ -3118,6 +3287,7 @@ export class SyncEngine {
             }
         }
 
+        assertExpectedMachine()
         const sessionMeta = this.sessionCache.getSession(sessionId)?.metadata
         const machineId = sessionMeta?.codexResumePending?.machineId ?? sessionMeta?.machineId
         // Remember the drained generation so a concurrent prepare-stop can
@@ -3176,6 +3346,7 @@ export class SyncEngine {
                 throw new ArchiveCleanupError('unconfirmed')
             }
         } else if (machineId && !runnerSpawned) {
+            assertExpectedMachine()
             // Terminal / non-runner sessions: KillSession is the primary stop.
             // Best-effort machine StopSession when a runner is connected; do not
             // refuse archive when no runner exists (#1911 bot Major).
@@ -3604,6 +3775,7 @@ export class SyncEngine {
         // argv before the first webhook (#1911 Major: unreapable window).
         namespace?: string
     ): ReturnType<RpcGateway['spawnSession']> {
+        this.assertMachineNotDeleting(machineId, namespace ?? this.getMachine(machineId)?.namespace ?? 'default')
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
         // A runner restart before the first webhook then left no persisted PID
@@ -4619,6 +4791,10 @@ export class SyncEngine {
     }
 
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
+        const machineId = this.getSessionByNamespace(sessionId, namespace)?.metadata?.machineId
+        if (machineId && this.machineDeletions.has(this.machineDeletionKey(machineId, namespace))) {
+            return { type: 'error', message: 'Device cleanup is in progress; retry after it finishes.', code: 'resume_failed' }
+        }
         if (this.archivedForkPending(sessionId, namespace)) {
             return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
         }
@@ -5130,6 +5306,10 @@ export class SyncEngine {
      * needed to resume is missing.
      */
     async reopenSession(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
+        const machineId = this.getSessionByNamespace(sessionId, namespace)?.metadata?.machineId
+        if (machineId && this.machineDeletions.has(this.machineDeletionKey(machineId, namespace))) {
+            return { type: 'error', message: 'Device cleanup is in progress; retry after it finishes.', code: 'resume_failed' }
+        }
         if (this.archivedForkPending(sessionId, namespace)) {
             return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
         }

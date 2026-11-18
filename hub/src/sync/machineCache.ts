@@ -188,6 +188,14 @@ export class MachineCache {
         return machine
     }
 
+    deleteMachine(machineId: string, namespace: string): void {
+        if (!this.store.machines.deleteMachine(machineId, namespace)) return
+        this.machines.delete(machineId)
+        this.lastBroadcastAtByMachineId.delete(machineId)
+        // The row/cache no longer exists, so carry the namespace explicitly.
+        this.publisher.emit({ type: 'machine-updated', machineId, namespace, data: null })
+    }
+
     reloadAll(): void {
         const machines = this.store.machines.getMachines()
         for (const machine of machines) {

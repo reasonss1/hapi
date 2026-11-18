@@ -23,6 +23,8 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { forgetMachineLabel } from '@/hooks/useMachineLabels'
+import { forgetSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
 import {
@@ -773,6 +775,7 @@ export function useSSE(options: {
                     removeSessionSummary(event.sessionId)
                     void queryClient.removeQueries({ queryKey: queryKeys.session(event.sessionId) })
                     clearMessageWindow(event.sessionId)
+                    void queryClient.invalidateQueries({ queryKey: [...queryKeys.machines, 'management'] })
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
                     const incoming = event.data
                     queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), previous => ({ session: {
@@ -812,10 +815,20 @@ export function useSSE(options: {
             }
 
             if (event.type === 'machine-updated') {
+                // The management list also contains offline machines and
+                // session-only entries, so live-machine cache patches cannot
+                // reproduce it. Refetch it for changes from any client.
+                void queryClient.invalidateQueries({ queryKey: [...queryKeys.machines, 'management'] })
                 if (isMachineRecord(event.data)) {
                     upsertMachine(event.data)
                 } else if (event.data === null) {
                     removeMachine(event.machineId)
+                    queryClient.setQueryData<MachinesResponse | undefined>([...queryKeys.machines, 'management'], (previous) => previous ? {
+                        ...previous,
+                        machines: previous.machines.filter((machine) => machine.id !== event.machineId),
+                    } : previous)
+                    forgetMachineLabel(event.machineId)
+                    forgetSessionListMachineFilter(event.machineId)
                 } else {
                     const patch = getMachinePatch(event.data)
                     if (patch?.active === false) {

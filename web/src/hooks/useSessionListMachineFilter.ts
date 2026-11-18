@@ -55,6 +55,18 @@ export function getInitialSessionListMachineFilter(): SessionListMachineFilter {
     return parseSessionListMachineFilter(safeGetItem(getSessionListMachineFilterStorageKey()))
 }
 
+export function forgetSessionListMachineFilter(machineId: string): void {
+    if (getInitialSessionListMachineFilter() !== machineId) {
+        return
+    }
+    const key = getSessionListMachineFilterStorageKey()
+    safeRemoveItem(key)
+    // Native storage events only reach other tabs; update this tab as well.
+    if (isBrowser()) {
+        window.dispatchEvent(new StorageEvent('storage', { key, newValue: null }))
+    }
+}
+
 export function useSessionListMachineFilter(): {
     machineFilter: SessionListMachineFilter
     setMachineFilter: (filter: SessionListMachineFilter) => void

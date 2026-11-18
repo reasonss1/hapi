@@ -263,6 +263,10 @@ export function getMachineByNamespace(db: Database, id: string, namespace: strin
     return row ? toStoredMachine(row) : null
 }
 
+export function deleteMachine(db: Database, id: string, namespace: string): boolean {
+    return db.prepare('DELETE FROM machines WHERE id = ? AND namespace = ?').run(id, namespace).changes > 0
+}
+
 export function getMachines(db: Database): StoredMachine[] {
     const rows = db.prepare('SELECT * FROM machines ORDER BY updated_at DESC').all() as DbMachineRow[]
     return rows.map(toStoredMachine)

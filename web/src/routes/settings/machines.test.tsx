@@ -1,19 +1,21 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { Machine } from '@/types/api'
+import { queryKeys } from '@/lib/query-keys'
 import SettingsMachinesPage from '@/routes/settings/machines'
 
 const renameMachineMock = vi.fn()
+const deleteMachineMock = vi.fn()
 const machinesMock = vi.fn()
 
 vi.mock('@/lib/app-context', () => ({
-    useAppContext: () => ({ api: { renameMachine: renameMachineMock } }),
+    useAppContext: () => ({ api: { renameMachine: renameMachineMock, deleteMachine: deleteMachineMock } }),
 }))
 
-vi.mock('@/hooks/queries/useMachines', () => ({
-    useMachines: () => ({ machines: machinesMock(), isLoading: false, error: null, refetch: vi.fn() }),
+vi.mock('@/hooks/queries/useMachineManagement', () => ({
+    useMachineManagement: () => ({ machines: machinesMock(), isLoading: false, error: null }),
 }))
 
 function makeMachine(overrides?: Partial<Machine>): Machine {
@@ -35,13 +37,14 @@ function makeMachine(overrides?: Partial<Machine>): Machine {
 
 function renderPage() {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    return render(
+    const view = render(
         <QueryClientProvider client={queryClient}>
             <I18nProvider>
                 <SettingsMachinesPage />
             </I18nProvider>
         </QueryClientProvider>,
     )
+    return { ...view, queryClient }
 }
 
 function startEditing(name: string) {
@@ -52,7 +55,10 @@ function startEditing(name: string) {
 describe('SettingsMachinesPage', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        window.localStorage.clear()
+        window.localStorage.setItem('hapi-lang', 'en')
         renameMachineMock.mockResolvedValue(undefined)
+        deleteMachineMock.mockResolvedValue({ ok: true, deletedSessions: 2 })
         machinesMock.mockReturnValue([makeMachine()])
     })
 
@@ -65,6 +71,7 @@ describe('SettingsMachinesPage', () => {
 
         expect(screen.getByRole('button', { name: 'Rename workstation.local' })).toBeTruthy()
         expect(screen.getByText('workstation.local · linux')).toBeTruthy()
+        expect(screen.getByText('HAPI runner 1.0.0')).toBeTruthy()
     })
 
     it('shows the custom name while keeping the hostname visible', () => {
@@ -174,10 +181,79 @@ describe('SettingsMachinesPage', () => {
         expect(screen.getByRole('textbox')).toBeTruthy()
     })
 
-    it('renders an empty state when no machines are online', () => {
+    it('renders an empty state when no machines or machine sessions remain', () => {
         machinesMock.mockReturnValue([])
         renderPage()
 
-        expect(screen.getByText('No machines online.')).toBeTruthy()
+        expect(screen.getByText('No machines or saved machine sessions.')).toBeTruthy()
+    })
+
+    it('shows offline machines and session-only machines without offering to rename a missing machine', () => {
+        machinesMock.mockReturnValue([
+            makeMachine({ active: false }),
+            { ...makeMachine({ id: 'ghost', metadata: { host: 'old-device' } as Machine['metadata'] }), sessionOnly: true, sessionCount: 2 },
+        ])
+        renderPage()
+
+        expect(screen.getByText('Offline')).toBeTruthy()
+        expect(screen.getByText('Saved sessions only · 2 Hub sessions')).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'Rename old-device' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Delete old-device' })).toBeTruthy()
+    })
+
+    it('explains the deletion scope and allows cancelling before any request', () => {
+        renderPage()
+        fireEvent.click(screen.getByRole('button', { name: 'Delete workstation.local' }))
+
+        const dialog = screen.getByRole('dialog')
+        expect(within(dialog).getByText(/HAPI sessions and Runner, then permanently delete its Hub registration/)).toBeTruthy()
+        expect(within(dialog).getByText(/Original Codex/)).toBeTruthy()
+        expect(within(dialog).getByText(/shared connection token is not revoked/)).toBeTruthy()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+        expect(screen.queryByRole('dialog')).toBeNull()
+        expect(deleteMachineMock).not.toHaveBeenCalled()
+    })
+
+    it('deletes the requested machine, clears only its browser cache, and refreshes machines and sessions', async () => {
+        const { queryClient } = renderPage()
+        const machines = [makeMachine(), makeMachine({ id: 'machine-2' })]
+        queryClient.setQueryData(queryKeys.machines, { machines })
+        queryClient.setQueryData([...queryKeys.machines, 'management'], { machines })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+        window.localStorage.setItem('hapi-machine-labels', JSON.stringify({ 'machine-1': 'Old device', 'machine-2': 'Keep device' }))
+        window.localStorage.setItem('hapi-session-list-machine-filter', 'machine-1')
+        window.localStorage.setItem('test-auth-token', 'keep-token')
+
+        fireEvent.click(screen.getByRole('button', { name: 'Delete workstation.local' }))
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete machine and Hub history' }))
+
+        await waitFor(() => expect(deleteMachineMock).toHaveBeenCalledWith('machine-1'))
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+        expect(JSON.parse(window.localStorage.getItem('hapi-machine-labels')!)).toEqual({ 'machine-2': 'Keep device' })
+        expect(window.localStorage.getItem('hapi-session-list-machine-filter')).toBeNull()
+        expect(window.localStorage.getItem('test-auth-token')).toBe('keep-token')
+        expect(queryClient.getQueryData(queryKeys.machines)).toEqual({ machines: [machines[1]] })
+        expect(queryClient.getQueryData([...queryKeys.machines, 'management'])).toEqual({ machines: [machines[1]] })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.machines })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions })
+    })
+
+    it('keeps the confirmation and cached machine information when the server refuses deletion', async () => {
+        deleteMachineMock.mockRejectedValue(new Error('Stop the Runner before deleting this machine.'))
+        window.localStorage.setItem('hapi-machine-labels', JSON.stringify({ 'machine-1': 'Keep device' }))
+        renderPage()
+        fireEvent.click(screen.getByRole('button', { name: 'Delete workstation.local' }))
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete machine and Hub history' }))
+
+        await waitFor(() => expect(screen.getByText('Stop the Runner before deleting this machine.')).toBeTruthy())
+        expect(screen.getByRole('dialog')).toBeTruthy()
+        expect(JSON.parse(window.localStorage.getItem('hapi-machine-labels')!)).toEqual({ 'machine-1': 'Keep device' })
+    })
+
+    it('links to the source of the deployed personal-fork branch', () => {
+        renderPage()
+
+        expect(screen.getByRole('link', { name: 'View source' }).getAttribute('href')).toBe('https://github.com/reasonss1/hapi/tree/deploy/agent-updates-preserve-custom')
     })
 })

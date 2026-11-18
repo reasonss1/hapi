@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite'
 
 import type { StoredMachine, VersionedUpdateResult } from './types'
 import {
+    deleteMachine,
     getMachine,
     getMachineByNamespace,
     getMachines,
@@ -38,6 +39,10 @@ export class MachineStore {
         namespace: string
     ): VersionedUpdateResult<unknown | null> {
         return updateMachineRunnerState(this.db, id, runnerState, expectedVersion, namespace)
+    }
+
+    deleteMachine(id: string, namespace: string): boolean {
+        return deleteMachine(this.db, id, namespace)
     }
 
     getMachine(id: string): StoredMachine | null {

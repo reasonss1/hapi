@@ -18,6 +18,8 @@ import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import { readPeerSpawnDefaults } from '../../config/peerSpawnDefaults'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { MachineDeletionError } from '../../sync/machineDeletionError'
+import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
 import { UpdateAgentToolRequestSchema } from '@hapi/protocol/agentTools'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
@@ -84,8 +86,24 @@ export function createMachinesRoutes(
         }
 
         const namespace = c.get('namespace')
-        const machines = engine.getOnlineMachinesByNamespace(namespace)
+        const includeOffline = ['1', 'true'].includes(c.req.query('includeOffline') ?? '')
+        const machines = includeOffline
+            ? engine.getMachinesForManagement(namespace)
+            : engine.getOnlineMachinesByNamespace(namespace)
         return c.json({ machines })
+    })
+
+    app.delete('/machines/:id', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+        try {
+            return c.json(await engine.deleteMachine(c.req.param('id'), c.get('namespace')))
+        } catch (error) {
+            if (error instanceof MachineDeletionError || error instanceof ArchiveCleanupError) {
+                return c.json({ error: error.message, code: error.code }, error.status)
+            }
+            return c.json({ error: 'Device cleanup failed', code: 'machine_cleanup_failed' }, 500)
+        }
     })
 
     // Only the owning namespace can inspect or update a device's tools.

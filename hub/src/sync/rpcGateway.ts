@@ -524,6 +524,11 @@ export class RpcGateway {
         return CursorChatStoreStatusSchema.parse(result)
     }
 
+    getMachineRunnerSocketId(machineId: string): string | null {
+        const socketId = this.rpcRegistry.getSocketIdForMethod(`${machineId}:${RPC_METHODS.StopRunner}`)
+        return socketId && this.io.of('/cli').sockets.has(socketId) ? socketId : null
+    }
+
     async stopRunner(machineId: string): Promise<void> {
         await this.machineRpc(machineId, RPC_METHODS.StopRunner, {})
     }
