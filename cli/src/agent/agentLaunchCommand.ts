@@ -2,8 +2,14 @@ import { accessSync, existsSync, statSync } from 'node:fs'
 import { constants } from 'node:fs'
 import { delimiter, posix, win32 } from 'node:path'
 import type { AgentFlavor } from '@hapi/protocol'
+import { getManagedAgentCommand, getPinnedManagedAgentCommand } from './managedAgentTools'
 
 type LaunchEnvironment = Record<string, string | undefined>
+
+export type AgentCommandOptions = {
+    /** Machine probes must observe an activation without restarting the runner. */
+    freshManaged?: boolean
+}
 
 const DEFAULT_COMMANDS: Record<AgentFlavor, string> = {
     agy: 'agy',
@@ -23,10 +29,15 @@ const DEFAULT_COMMANDS: Record<AgentFlavor, string> = {
 export function getAgentLaunchCommand(
     flavor: AgentFlavor,
     env: LaunchEnvironment = process.env,
+    options: AgentCommandOptions = {},
 ): string {
-    if (flavor === 'claude') return env.HAPI_CLAUDE_PATH?.trim() || DEFAULT_COMMANDS.claude
-    if (flavor === 'copilot') return env.COPILOT_CLI_PATH?.trim() || DEFAULT_COMMANDS.copilot
+    if (flavor === 'claude' && env.HAPI_CLAUDE_PATH?.trim()) return env.HAPI_CLAUDE_PATH.trim()
+    if (flavor === 'copilot' && env.COPILOT_CLI_PATH?.trim()) return env.COPILOT_CLI_PATH.trim()
     if (flavor === 'dsh') return env.HAPI_DSH_ACP_COMMAND?.trim() || DEFAULT_COMMANDS.dsh
+    const managed = options.freshManaged
+        ? getManagedAgentCommand(flavor, env)
+        : getPinnedManagedAgentCommand(flavor, env)
+    if (managed) return managed
     return DEFAULT_COMMANDS[flavor]
 }
 

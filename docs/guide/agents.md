@@ -8,6 +8,8 @@ agents are disabled with a reason. Scripts must use `hapi <agent> [options]`.
 `hapi --help` shows HAPI's own help. Options after an agent name belong to that
 agent's integration; their supported syntax varies by agent.
 
+See [Agent updates](./agent-updates.md) to check and update installed agents from each device’s settings page.
+
 ## Support matrix
 
 | Agent | Command | Integration | Local | Remote | Permission modes | Resume |

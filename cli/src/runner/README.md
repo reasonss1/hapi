@@ -2,7 +2,9 @@
 
 The runner is a persistent background process that starts and manages HAPI
 sessions from web/phone. After you update the CLI, it can restart itself onto
-the new binary; it does not download or install updates.
+the new binary. Agent-tool updates are separate: the machine RPC can install
+validated agent versions alongside existing installations without restarting
+the runner or its sessions. It does not install HAPI CLI or hub updates.
 
 Source paths below are relative to `cli/` unless prefixed with another package.
 

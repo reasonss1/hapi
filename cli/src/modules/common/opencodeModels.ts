@@ -84,9 +84,9 @@ function extractModelsFromResponse(response: unknown): {
     };
 }
 
-async function runOpencodeProbe(cwd: string): Promise<ListOpencodeModelsForCwdResponse> {
+async function runOpencodeProbe(cwd: string, executable: string): Promise<ListOpencodeModelsForCwdResponse> {
     const transport = await AcpStdioTransport.create({
-        command: getAgentLaunchCommand('opencode'),
+        command: executable,
         args: ['acp']
     });
 
@@ -142,21 +142,23 @@ export async function listOpencodeModelsForCwd(
         return { success: false, error: 'cwd is required' };
     }
 
-    const cached = cache.get(trimmed);
+    const executable = getAgentLaunchCommand('opencode', process.env, { freshManaged: true });
+    const key = JSON.stringify([trimmed, executable]);
+    const cached = cache.get(key);
     if (cached && cached.expiresAt > Date.now()) {
         return cached.response;
     }
 
-    const existing = inflight.get(trimmed);
+    const existing = inflight.get(key);
     if (existing) {
         return existing;
     }
 
     const promise = (async () => {
         try {
-            const response = await runOpencodeProbe(trimmed);
+            const response = await runOpencodeProbe(trimmed, executable);
             if (response.success) {
-                cache.set(trimmed, {
+                cache.set(key, {
                     expiresAt: Date.now() + CACHE_TTL_MS,
                     response
                 });
@@ -168,11 +170,11 @@ export async function listOpencodeModelsForCwd(
                 error: getErrorMessage(error, 'Failed to discover OpenCode models')
             } satisfies ListOpencodeModelsForCwdResponse;
         } finally {
-            inflight.delete(trimmed);
+            inflight.delete(key);
         }
     })();
 
-    inflight.set(trimmed, promise);
+    inflight.set(key, promise);
     return promise;
 }
 

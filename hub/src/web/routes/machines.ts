@@ -18,6 +18,7 @@ import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import { readPeerSpawnDefaults } from '../../config/peerSpawnDefaults'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { UpdateAgentToolRequestSchema } from '@hapi/protocol/agentTools'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
 import {
@@ -86,6 +87,36 @@ export function createMachinesRoutes(
         const machines = engine.getOnlineMachinesByNamespace(namespace)
         return c.json({ machines })
     })
+
+    // Only the owning namespace can inspect or update a device's tools.
+    // Installation runs on the runner; the hub never accepts a command or package name.
+    for (const method of ['get', 'post'] as const) {
+        const path = method === 'get' ? '/machines/:id/agent-tools' : '/machines/:id/agent-tools/update'
+        app[method](path, async (c) => {
+            const engine = getSyncEngine()
+            if (!engine) return c.json({ error: 'Not connected' }, 503)
+            const machineId = c.req.param('id')!
+            const machine = requireMachine(c, engine, machineId)
+            if (machine instanceof Response) return machine
+            if (!machine.active) return c.json({ error: 'Machine offline', code: 'machine_offline' }, 503)
+            if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentToolUpdates)) {
+                return c.json({ error: 'Upgrade this device runner to manage agent versions', code: 'runner_upgrade_required' }, 409)
+            }
+            try {
+                if (method === 'get') {
+                    return c.json(await engine.getAgentTools(machineId, c.req.query('refresh') === 'true'))
+                }
+                const parsed = UpdateAgentToolRequestSchema.safeParse(await c.req.json().catch(() => null))
+                if (!parsed.success) return c.json({ error: 'Invalid tool' }, 400)
+                return c.json(await engine.updateAgentTool(machineId, parsed.data.tool))
+            } catch (error) {
+                if (error instanceof RpcTargetMissingError) {
+                    return c.json({ error: 'Machine unavailable', code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
+                }
+                return c.json({ error: 'Unable to manage agent versions', code: 'agent_tools_unavailable' }, 502)
+            }
+        })
+    }
 
     app.get('/machines/:id/usage-query/settings', async (c) => {
         const engine = getSyncEngine()

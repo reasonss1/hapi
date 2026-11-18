@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const sendRequestMock = vi.fn()
 const closeMock = vi.fn().mockResolvedValue(undefined)
 const transportCreate = vi.fn()
+const launchCommand = vi.hoisted(() => vi.fn(() => 'opencode'))
+
+vi.mock('@/agent/agentLaunchCommand', () => ({ getAgentLaunchCommand: launchCommand }))
 
 vi.mock('@/agent/backends/acp/AcpStdioTransport', () => {
     class MockAcpStdioTransport {
@@ -24,6 +27,7 @@ describe('listOpencodeModelsForCwd', () => {
         sendRequestMock.mockReset()
         closeMock.mockClear()
         transportCreate.mockClear()
+        launchCommand.mockReturnValue('opencode')
     })
 
     afterEach(() => {
@@ -34,6 +38,21 @@ describe('listOpencodeModelsForCwd', () => {
         const result = await listOpencodeModelsForCwd('')
         expect(result).toEqual({ success: false, error: 'cwd is required' })
         expect(sendRequestMock).not.toHaveBeenCalled()
+    })
+
+    it('probes the new executable immediately after activation instead of reusing the old catalog', async () => {
+        launchCommand.mockReturnValue('/managed/opencode/1.0.0/opencode')
+        sendRequestMock.mockResolvedValueOnce({ protocolVersion: 1 }).mockResolvedValueOnce({
+            availableModels: [{ modelId: 'old-model' }],
+        })
+        expect((await listOpencodeModelsForCwd('/project')).availableModels).toEqual([{ modelId: 'old-model' }])
+
+        launchCommand.mockReturnValue('/managed/opencode/2.0.0/opencode')
+        sendRequestMock.mockResolvedValueOnce({ protocolVersion: 1 }).mockResolvedValueOnce({
+            availableModels: [{ modelId: 'new-model' }],
+        })
+        expect((await listOpencodeModelsForCwd('/project')).availableModels).toEqual([{ modelId: 'new-model' }])
+        expect(transportCreate).toHaveBeenLastCalledWith({ command: '/managed/opencode/2.0.0/opencode', args: ['acp'] })
     })
 
     it('spawns opencode acp, runs initialize and session/new, returns availableModels', async () => {

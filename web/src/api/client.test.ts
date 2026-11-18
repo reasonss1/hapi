@@ -12,6 +12,21 @@ describe('ApiClient error mapping', () => {
         globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
     })
 
+    it('encodes machine ids and sends structured agent update requests', async () => {
+        const body = { tools: [], checkedAt: null }
+        fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }))
+        const api = new ApiClient('test-token')
+        await api.getMachineAgentTools('device /', true)
+        expect(fetchMock.mock.calls[0][0]).toBe('/api/machines/device%20%2F/agent-tools?refresh=true')
+        fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }))
+        await api.getMachineAgentTools('device /')
+        expect(fetchMock.mock.calls[1][0]).toBe('/api/machines/device%20%2F/agent-tools')
+        fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }))
+        await api.updateMachineAgentTool('device /', 'codex')
+        expect(fetchMock.mock.calls[2][0]).toBe('/api/machines/device%20%2F/agent-tools/update')
+        expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: 'POST', body: JSON.stringify({ tool: 'codex' }) })
+    })
+
     it('apiErrorMessage unwraps the hub error string and falls back cleanly', () => {
         const body = '{"success":false,"error":"No online machine available for Pi history import"}'
         const error = new ApiError(`HTTP 503 Service Unavailable: ${body}`, 503, 'No online machine available for Pi history import', body)

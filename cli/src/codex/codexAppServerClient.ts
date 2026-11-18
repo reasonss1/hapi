@@ -7,6 +7,8 @@ import { killProcessByChildProcess } from '@/utils/process';
 import { CODEX_WEBSOCKET_MAX_PAYLOAD } from './websocketLimits';
 import { resolveModelCatalogArgs } from './utils/modelCatalog';
 import { resolveSelectedCodexCommand } from './utils/codexExecutable';
+import { getManagedAgentCommand, getPinnedManagedAgentCommand } from '@/agent/managedAgentTools';
+import type { AgentCommandOptions } from '@/agent/agentLaunchCommand';
 import type {
     AccountRateLimitsReadResponse,
     AccountReadResponse,
@@ -87,6 +89,8 @@ export function isIndeterminateError(error: unknown): boolean {
 
 type CodexAppServerClientOptions = {
     cwd?: string;
+    /** Short-lived machine probes observe newly activated tools. */
+    freshManagedCommand?: boolean;
     /** An independently owned shared server. Disconnect only detaches this client. */
     endpoint?: string;
     token?: string;
@@ -141,10 +145,15 @@ function compareVersion(a: number[] | null, b: number[] | null): number {
     return 0;
 }
 
-export function resolveCodexAppServerCommand(): string {
+export function resolveCodexAppServerCommand(options: AgentCommandOptions = {}): string {
     if (process.env.HAPI_CODEX_APP_SERVER_BIN) {
         return process.env.HAPI_CODEX_APP_SERVER_BIN;
     }
+
+    const managed = options.freshManaged
+        ? getManagedAgentCommand('codex')
+        : getPinnedManagedAgentCommand('codex');
+    if (managed) return managed;
 
     const candidates: CodexCommandCandidate[] = [{
         command: 'codex',
@@ -259,7 +268,9 @@ export class CodexAppServerClient extends JsonLineParser {
             return;
         }
 
-        const codexCommand = resolveSelectedCodexCommand(resolveCodexAppServerCommand());
+        const codexCommand = resolveSelectedCodexCommand(resolveCodexAppServerCommand({
+            freshManaged: this.options.freshManagedCommand
+        }));
         logger.debug(`[CodexAppServer] Starting ${codexCommand.command} app-server`);
         const catalogArgs = resolveModelCatalogArgs();
         const child = spawn(codexCommand.command, [...codexCommand.args, 'app-server', ...catalogArgs], {

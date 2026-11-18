@@ -22,6 +22,7 @@ import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '@/utils/process'
 import { getAgentAvailability } from './agentAvailability'
 import { getAgentLaunchCommand } from './agentLaunchCommand'
+import { getManagedAgentLaunchPolicy } from './managedAgentLaunchPolicy'
 
 const CACHE_TTL_MS = 60_000
 const DEFAULT_PROVIDER_PROBE_TIMEOUT_MS = 5_000
@@ -879,7 +880,7 @@ function runClaudeStatusProbe(executable: string, env: NodeJS.ProcessEnv): Promi
     return new Promise((resolve, reject) => {
         const child = spawn(executable, args, {
             cwd: homedir(),
-            env: withBunRuntimeEnv(env, { allowBunBeBun: false }),
+            env: withBunRuntimeEnv(getManagedAgentLaunchPolicy('claude', executable, env).env, { allowBunBeBun: false }),
             stdio: ['pipe', 'pipe', 'pipe'],
             shell: false,
             windowsHide: process.platform === 'win32'

@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { resolveExecutable } from '@/agent/agentLaunchCommand';
+import { resolveExecutable, type AgentCommandOptions } from '@/agent/agentLaunchCommand';
+import { getManagedAgentCommand, getPinnedManagedAgentCommand } from '@/agent/managedAgentTools';
 
 const windowsPath = path.win32;
 
@@ -88,7 +89,12 @@ export const MACOS_CODEX_APP_COMMAND = '/Applications/Codex.app/Contents/Resourc
 export function resolveCodexCommand(
     env: Record<string, string | undefined> = process.env,
     platform: NodeJS.Platform = process.platform,
+    options: AgentCommandOptions = {},
 ): CodexCommand {
+    const managed = options.freshManaged
+        ? getManagedAgentCommand('codex', env)
+        : getPinnedManagedAgentCommand('codex', env);
+    if (managed) return resolveSelectedCodexCommand(managed, platform);
     if (platform !== 'win32') {
         const command = resolveExecutable('codex', {
             platform,

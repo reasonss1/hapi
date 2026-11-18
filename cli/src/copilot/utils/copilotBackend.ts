@@ -1,6 +1,7 @@
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import type { CopilotAgentMode } from '@hapi/protocol';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
+import { getManagedAgentLaunchPolicy } from '@/agent/managedAgentLaunchPolicy';
 
 function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     const result: Record<string, string> = {};
@@ -21,10 +22,11 @@ export function buildCopilotAcpArgs(opts?: { agentMode?: CopilotAgentMode }): st
     return args;
 }
 
-export function createCopilotBackend(opts?: { agentMode?: CopilotAgentMode }): AcpSdkBackend {
+export function createCopilotBackend(opts?: { agentMode?: CopilotAgentMode; freshManaged?: boolean }): AcpSdkBackend {
+    const command = getAgentLaunchCommand('copilot', process.env, opts);
     return new AcpSdkBackend({
-        command: getAgentLaunchCommand('copilot'),
-        args: buildCopilotAcpArgs(opts),
+        command,
+        args: [...buildCopilotAcpArgs(opts), ...getManagedAgentLaunchPolicy('copilot', command).extraArgs],
         env: filterEnv(process.env),
         configOptionUpdates: true
     });

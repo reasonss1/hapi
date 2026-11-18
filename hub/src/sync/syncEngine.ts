@@ -5837,6 +5837,14 @@ export class SyncEngine {
         return await this.rpcGateway.checkPathsExist(machineId, paths)
     }
 
+    async getAgentTools(machineId: string, refresh = false): ReturnType<RpcGateway['getAgentTools']> {
+        return await this.rpcGateway.getAgentTools(machineId, refresh)
+    }
+
+    async updateAgentTool(machineId: string, tool: import('@hapi/protocol/agentTools').AgentToolId): ReturnType<RpcGateway['updateAgentTool']> {
+        return await this.rpcGateway.updateAgentTool(machineId, tool)
+    }
+
     async getAgentAvailability(machineId: string): ReturnType<RpcGateway['getAgentAvailability']> {
         return await this.rpcGateway.getAgentAvailability(machineId)
     }

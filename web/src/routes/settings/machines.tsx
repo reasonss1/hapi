@@ -8,6 +8,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { getMachineTitle } from '@/hooks/useMachineLabels'
 import { queryKeys } from '@/lib/query-keys'
+import { MachineAgentTools } from '@/components/settings/MachineAgentTools'
 import { SettingsPageContent, SettingsSection } from '@/components/settings/SettingsPrimitives'
 
 function MachineRow(props: { api: ApiClient | null; machine: Machine }) {
@@ -105,6 +106,7 @@ function MachineRow(props: { api: ApiClient | null; machine: Machine }) {
                     ) : null}
                 </div>
             </div>
+            <MachineAgentTools api={props.api} machine={props.machine} />
             {error ? <div role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</div> : null}
         </div>
     )

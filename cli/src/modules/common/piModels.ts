@@ -119,9 +119,9 @@ export function resolveProbeCwd(): string {
     return cwd === parse(cwd).root ? homedir() : cwd
 }
 
-function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
+function runPiModelsProbe(executable: string): Promise<ListPiModelsForMachineResponse> {
     return new Promise((resolve, reject) => {
-        const child = spawn(getAgentLaunchCommand('pi'), [...PI_PROBE_ARGS], {
+        const child = spawn(executable, [...PI_PROBE_ARGS], {
             env: process.env,
             // Probe from the runner's cwd, falling back to home at a
             // filesystem root (see resolveProbeCwd).
@@ -234,27 +234,28 @@ export function _resetPiModelsCacheForTests(): void {
 }
 
 export async function listPiModelsForMachine(): Promise<ListPiModelsForMachineResponse> {
+    const executable = getAgentLaunchCommand('pi', process.env, { freshManaged: true })
     const now = Date.now()
-    const cached = cache.get('default')
+    const cached = cache.get(executable)
     if (cached && cached.expiresAt > now) {
         return cached.response
     }
 
-    const existing = inflight.get('default')
+    const existing = inflight.get(executable)
     if (existing) {
         return existing
     }
 
-    const pending = runPiModelsProbe()
+    const pending = runPiModelsProbe(executable)
         .then((response) => {
-            cache.set('default', { expiresAt: now + CACHE_TTL_MS, response })
-            inflight.delete('default')
+            cache.set(executable, { expiresAt: now + CACHE_TTL_MS, response })
+            inflight.delete(executable)
             return response
         })
         .catch((error) => {
-            inflight.delete('default')
+            inflight.delete(executable)
             throw new Error(getErrorMessage(error, 'Failed to list Pi models'))
         })
-    inflight.set('default', pending)
+    inflight.set(executable, pending)
     return pending
 }

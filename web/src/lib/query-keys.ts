@@ -4,6 +4,7 @@ export const queryKeys = {
     messages: (sessionId: string) => ['messages', sessionId] as const,
     sessionContentSearch: (sessionId: string, query: string) => ['session-content-search', sessionId, query] as const,
     machines: ['machines'] as const,
+    machineAgentTools: (machineId: string) => ['machine-agent-tools', machineId] as const,
     sqliteStorage: ['sqlite-storage'] as const,
     hubSettings: ['hub-settings'] as const,
     passkeys: ['passkeys'] as const,

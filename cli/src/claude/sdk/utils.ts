@@ -8,7 +8,8 @@ import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { logger } from '@/ui/logger'
-import { getAgentLaunchCommand, resolveExecutable } from '@/agent/agentLaunchCommand'
+import { getAgentLaunchCommand, resolveExecutable, type AgentCommandOptions } from '@/agent/agentLaunchCommand'
+import { getManagedAgentCommand, getPinnedManagedAgentCommand } from '@/agent/managedAgentTools'
 
 const windowsPath = path.win32
 
@@ -123,6 +124,7 @@ function findGlobalClaudePath(env: Record<string, string | undefined>): string |
  */
 export function getDefaultClaudeCodePath(
     env: Record<string, string | undefined> = process.env,
+    options: AgentCommandOptions = {},
 ): string {
     // Allow explicit override via env var. On Windows, tolerate npm
     // shim paths (`claude.cmd` / extensionless `claude`) by resolving them
@@ -139,6 +141,11 @@ export function getDefaultClaudeCodePath(
         logger.debug(`[Claude SDK] Using HAPI_CLAUDE_PATH: ${configuredPath}`)
         return configuredPath
     }
+
+    const managed = options.freshManaged
+        ? getManagedAgentCommand('claude', env)
+        : getPinnedManagedAgentCommand('claude', env)
+    if (managed) return managed
 
     // Find global claude
     const globalPath = findGlobalClaudePath(env)

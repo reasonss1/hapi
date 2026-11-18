@@ -20,8 +20,9 @@ type AgentLaunchSpec = {
 }
 
 function resolveLaunchSpec(agent: AgentFlavor, env: LaunchEnvironment, context: LaunchContext): AgentLaunchSpec {
+    const options = { freshManaged: context === 'runner' }
     if (agent === 'claude') {
-        return { command: getDefaultClaudeCodePath(env), args: [] }
+        return { command: getDefaultClaudeCodePath(env, options), args: [] }
     }
     if (agent === 'codex') {
         // Remote Codex sessions launch app-server through this explicit
@@ -30,12 +31,12 @@ function resolveLaunchSpec(agent: AgentFlavor, env: LaunchEnvironment, context: 
         if (context === 'runner' && env.HAPI_CODEX_APP_SERVER_BIN) {
             return { command: env.HAPI_CODEX_APP_SERVER_BIN.trim(), args: [] }
         }
-        return resolveCodexCommand(env)
+        return resolveCodexCommand(env, process.platform, options)
     }
     if (agent === 'dsh') {
         return resolveDshAcpCommand(env)
     }
-    return { command: getAgentLaunchCommand(agent, env), args: [] }
+    return { command: getAgentLaunchCommand(agent, env, options), args: [] }
 }
 
 function hasValidDshConfiguration(env: LaunchEnvironment): boolean {

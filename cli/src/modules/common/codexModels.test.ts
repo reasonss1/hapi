@@ -3,10 +3,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const { constructorOptions, listModelsMock } = vi.hoisted(() => ({
+const { constructorOptions, listModelsMock, managedCommandMock } = vi.hoisted(() => ({
     constructorOptions: [] as unknown[],
-    listModelsMock: vi.fn()
+    listModelsMock: vi.fn(),
+    managedCommandMock: vi.fn((): string | null => null)
 }));
+
+vi.mock('@/agent/managedAgentTools', () => ({ getManagedAgentCommand: managedCommandMock }));
 
 vi.mock('node:os', async () => {
     const actual = await vi.importActual<typeof import('node:os')>('node:os');
@@ -35,6 +38,7 @@ describe('listCodexModels cwd', () => {
     beforeEach(() => {
         constructorOptions.length = 0;
         listModelsMock.mockReset();
+        managedCommandMock.mockReturnValue(null);
         _resetCodexModelsCacheForTests();
     });
     afterEach(async () => {
@@ -47,7 +51,7 @@ describe('listCodexModels cwd', () => {
 
         await listCodexModels();
 
-        expect(constructorOptions).toEqual([{ cwd: '/neutral-home' }]);
+        expect(constructorOptions).toEqual([{ cwd: '/neutral-home', freshManagedCommand: true }]);
     });
 
     it('caches the model list within the TTL so repeat calls skip the app-server spawn', async () => {
@@ -76,6 +80,17 @@ describe('listCodexModels cwd', () => {
         await listCodexModels(true);
         await listCodexModels(true);
 
+        expect(constructorOptions).toHaveLength(2);
+    });
+
+    it('refreshes the catalog immediately after a managed Codex activation', async () => {
+        managedCommandMock.mockReturnValue('/managed/codex/1.0.0/codex');
+        listModelsMock.mockResolvedValueOnce({ data: [{ id: 'old-model' }] });
+        expect(await listCodexModels()).toEqual([expect.objectContaining({ id: 'old-model' })]);
+
+        managedCommandMock.mockReturnValue('/managed/codex/2.0.0/codex');
+        listModelsMock.mockResolvedValueOnce({ data: [{ id: 'new-model' }] });
+        expect(await listCodexModels()).toEqual([expect.objectContaining({ id: 'new-model' })]);
         expect(constructorOptions).toHaveLength(2);
     });
 

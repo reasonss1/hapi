@@ -86,6 +86,8 @@ import { homedir } from 'node:os'
 import type { CursorChatStoreStatus } from '@hapi/protocol/apiTypes'
 import { MachinePathPolicy } from './machinePathPolicy'
 import { getAgentAvailabilityResponse } from '@/agent/agentAvailability'
+import { UpdateAgentToolRequestSchema } from '@hapi/protocol/agentTools'
+import { AgentToolUpdateService } from '@/agent/agentToolUpdates'
 import {
     QueryUsageRequestSchema,
     SaveUsageQuerySettingsRequestSchema,
@@ -223,6 +225,16 @@ export class ApiMachineClient {
             RPC_METHODS.AgentAvailability,
             async () => getAgentAvailabilityResponse()
         )
+
+        const agentToolUpdates = new AgentToolUpdateService()
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.AgentTools, async (params: unknown) => {
+            const refresh = typeof params === 'object' && params !== null
+                && 'refresh' in params && params.refresh === true
+            return await agentToolUpdates.getStatus(refresh)
+        })
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.UpdateAgentTool, async (params: unknown) => {
+            return await agentToolUpdates.update(UpdateAgentToolRequestSchema.parse(params).tool)
+        })
 
         this.rpcHandlerManager.registerHandler(
             RPC_METHODS.UsageQueryGetSettings,

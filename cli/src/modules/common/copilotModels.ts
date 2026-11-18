@@ -4,6 +4,7 @@ import { asString, isObject } from '@hapi/protocol';
 import type { CopilotModelsResponse, CopilotModelSummary } from '@hapi/protocol/apiTypes';
 import { createCopilotBackend } from '@/copilot/utils/copilotBackend';
 import { getErrorMessage } from './rpcResponses';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 export interface ListCopilotModelsForCwdRequest {
     cwd?: string;
@@ -90,7 +91,7 @@ function extractModelsFromAcpResponse(response: unknown): {
  * via `models.list` — Student plans typically return only `auto`.
  */
 async function listModelsViaSdkHeadless(): Promise<CopilotModelSummary[]> {
-    const command = process.env.COPILOT_CLI_PATH ?? 'copilot';
+    const command = getAgentLaunchCommand('copilot', process.env, { freshManaged: true });
     const child = spawn(command, ['--headless', '--stdio', '--no-auto-update'], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: process.env
@@ -146,7 +147,7 @@ async function listModelsViaAcpProbe(cwd: string): Promise<{
     availableModels: CopilotModelSummary[];
     currentModelId: string | null;
 }> {
-    const backend = createCopilotBackend();
+    const backend = createCopilotBackend({ freshManaged: true });
     try {
         await backend.initialize();
         const sessionId = await backend.newSession({ cwd, mcpServers: [] });
@@ -201,7 +202,8 @@ async function runCopilotProbe(cwd: string): Promise<ListCopilotModelsForCwdResp
 }
 
 export async function listCopilotModelsForCwd(cwd: string): Promise<ListCopilotModelsForCwdResponse> {
-    const key = cwd || process.cwd();
+    const directory = cwd || process.cwd();
+    const key = JSON.stringify([directory, getAgentLaunchCommand('copilot', process.env, { freshManaged: true })]);
     const cached = cache.get(key);
     if (cached && cached.expiresAt > Date.now()) {
         return cached.response;
@@ -212,7 +214,7 @@ export async function listCopilotModelsForCwd(cwd: string): Promise<ListCopilotM
         return pending;
     }
 
-    const promise = runCopilotProbe(key).then((response) => {
+    const promise = runCopilotProbe(directory).then((response) => {
         cache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, response });
         inflight.delete(key);
         return response;

@@ -1,4 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
+import { AgentToolsResponseSchema, type AgentToolsResponse, type AgentToolId } from '@hapi/protocol/agentTools'
 import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
@@ -432,6 +433,16 @@ export class RpcGateway {
     async getAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.AgentAvailability, {})
         return AgentAvailabilityResponseSchema.parse(result)
+    }
+
+    async getAgentTools(machineId: string, refresh = false): Promise<AgentToolsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.AgentTools, { refresh }, 60_000)
+        return AgentToolsResponseSchema.parse(result)
+    }
+
+    async updateAgentTool(machineId: string, tool: AgentToolId): Promise<AgentToolsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UpdateAgentTool, { tool }, 60_000)
+        return AgentToolsResponseSchema.parse(result)
     }
 
     async getUsageQuerySettings(machineId: string, agent: UsageQueryAgent): Promise<RpcUsageQuerySettingsResponse> {

@@ -77,6 +77,7 @@ import type {
     UsageSummaryResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
+import type { AgentToolId, AgentToolsResponse } from '@hapi/protocol/agentTools'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
 import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
@@ -1229,6 +1230,19 @@ export class ApiClient {
     async getMachineAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
         return await this.request<AgentAvailabilityResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/agent-availability`
+        )
+    }
+
+    async getMachineAgentTools(machineId: string, refresh = false): Promise<AgentToolsResponse> {
+        return await this.request<AgentToolsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/agent-tools${refresh ? '?refresh=true' : ''}`
+        )
+    }
+
+    async updateMachineAgentTool(machineId: string, tool: AgentToolId): Promise<AgentToolsResponse> {
+        return await this.request<AgentToolsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/agent-tools/update`,
+            { method: 'POST', body: JSON.stringify({ tool }) }
         )
     }
 

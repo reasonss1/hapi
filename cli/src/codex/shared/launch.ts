@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { resolveCodexCommand, type CodexCommand } from '../utils/codexExecutable';
+import { resolveCodexCommand, resolveSelectedCodexCommand, type CodexCommand } from '../utils/codexExecutable';
 import { parseCodexCliOverrides, stripCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
 import { resolveModelCatalogArgs } from '../utils/modelCatalog';
@@ -32,8 +32,9 @@ export function takeReservedSessionId(options: SharedLaunchOptions): string | un
 }
 
 /** Resolve once: a desktop server and a different PATH TUI are never mixed. */
-export function resolveSharedCodex(): CodexCommand {
-    const command = resolveCodexCommand();
+export function resolveSharedCodex(options?: Pick<SharedLaunchOptions, 'startedBy'>): CodexCommand {
+    const override = options?.startedBy === 'runner' && process.env.HAPI_CODEX_APP_SERVER_BIN?.trim();
+    const command = override ? resolveSelectedCodexCommand(override) : resolveCodexCommand();
     const version = execFileSync(command.command, [...command.args, '--version'], {
         encoding: 'utf8', timeout: 10_000, windowsHide: true
     }).match(/codex-cli (\d+)\.(\d+)\.(\d+)/);

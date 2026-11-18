@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import type { ClaudeModelSummary, ClaudeModelsResponse } from '@hapi/protocol/apiTypes'
 import { getDefaultClaudeCodePath } from '@/claude/sdk/utils'
+import { getManagedAgentLaunchPolicy } from '@/agent/managedAgentLaunchPolicy'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '../../utils/process'
 import { getErrorMessage } from './rpcResponses'
@@ -138,7 +139,7 @@ function runClaudeModelsProbe(executable: string): Promise<ListClaudeModelsRespo
     return new Promise((resolve, reject) => {
         const child = spawn(executable, [...CLAUDE_MODELS_PROBE_ARGS], {
             cwd: homedir(),
-            env: withBunRuntimeEnv(process.env, { allowBunBeBun: false }),
+            env: withBunRuntimeEnv(getManagedAgentLaunchPolicy('claude', executable).env, { allowBunBeBun: false }),
             stdio: ['pipe', 'pipe', 'pipe'],
             // getDefaultClaudeCodePath resolves an absolute path (claude.exe on
             // Windows), matching how sessions spawn it.
@@ -231,7 +232,7 @@ export function _resetClaudeModelsCacheForTests(): void {
 export async function listClaudeModels(): Promise<ListClaudeModelsResponse> {
     // Keyed by executable: HAPI_CLAUDE_PATH can point a runner at a different
     // claude install, whose catalog is its own.
-    const executable = getDefaultClaudeCodePath()
+    const executable = getDefaultClaudeCodePath(process.env, { freshManaged: true })
     const now = Date.now()
     const cached = cache.get(executable)
     if (cached && cached.expiresAt > now) {

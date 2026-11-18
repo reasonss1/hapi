@@ -42,7 +42,7 @@ async function freePort(): Promise<number> {
 /** One ordinary CLI execution owns one private engine, with concurrent frontends. */
 export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (ready: RuntimeReady) => void, abortSignal?: AbortSignal): Promise<void> {
     abortSignal?.throwIfAborted();
-    const command = resolveSharedCodex();
+    const command = resolveSharedCodex(options);
     const launch = sharedLaunchConfig(options, options.workingDirectory ?? process.cwd());
     const id = randomUUID();
     await mkdir(codexHome(), { recursive: true, mode: 0o700 });

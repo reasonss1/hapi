@@ -9,6 +9,7 @@ import { spawnWithTerminalGuard } from "@/utils/spawnWithTerminalGuard";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { stripNewlinesForWindowsShellArg } from "@/utils/shellEscape";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
+import { getManagedAgentLaunchPolicy } from '@/agent/managedAgentLaunchPolicy';
 import type { SessionModel } from "@/api/types";
 import type { PermissionMode } from "./loop";
 
@@ -135,7 +136,7 @@ export async function claudeLocal(opts: {
             command: claudeCommand,
             args,
             cwd: opts.path,
-            env: withBunRuntimeEnv(env, { allowBunBeBun: false }),
+            env: withBunRuntimeEnv(getManagedAgentLaunchPolicy('claude', claudeCommand, env).env, { allowBunBeBun: false }),
             signal: opts.abort,
             logLabel: 'ClaudeLocal',
             spawnName: 'claude',

@@ -7,6 +7,7 @@ import { CodexAppServerClient } from '@/codex/codexAppServerClient';
 import { resolveModelCatalogArgs } from '@/codex/utils/modelCatalog';
 import { resolveCodexHome } from '@/codex/utils/codexHome';
 import { getErrorMessage } from './rpcResponses';
+import { getManagedAgentCommand } from '@/agent/managedAgentTools';
 
 export interface ListCodexModelsRequest {
     includeHidden?: boolean;
@@ -123,7 +124,8 @@ async function catalogFingerprint(): Promise<string> {
     }
     const catalog = catalogPath ? await readOptionalFile(resolve(home, catalogPath)) : null;
     const hash = createHash('sha256');
-    for (const value of [home, config, auth, catalogPath, catalog]) {
+    for (const value of [home, config, auth, catalogPath, catalog,
+        process.env.HAPI_CODEX_APP_SERVER_BIN ?? getManagedAgentCommand('codex')]) {
         hash.update(value === null || value === undefined ? 'missing' : value);
         hash.update('\0');
     }
@@ -164,7 +166,7 @@ export async function listCodexModels(includeHidden: boolean = false): Promise<C
 async function fetchCodexModelsFromAppServer(includeHidden: boolean): Promise<CodexModelSummary[]> {
     // Model discovery is account-scoped. Never inherit a session/runner cwd:
     // project config or a deleted worktree must not alter or break the catalog.
-    const client = new CodexAppServerClient({ cwd: homedir() });
+    const client = new CodexAppServerClient({ cwd: homedir(), freshManagedCommand: true });
 
     try {
         await client.connect();

@@ -4,7 +4,8 @@ const harness = vi.hoisted(() => ({
     spawn: vi.fn(async (_opts: unknown) => {})
 }))
 
-vi.mock('node:fs', () => ({
+vi.mock('node:fs', async importOriginal => ({
+    ...await importOriginal<typeof import('node:fs')>(),
     mkdirSync: vi.fn()
 }))
 

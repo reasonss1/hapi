@@ -1,6 +1,7 @@
 import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
+import { getManagedAgentLaunchPolicy } from '@/agent/managedAgentLaunchPolicy';
 
 import type { CopilotAgentMode } from '@hapi/protocol';
 import { assertSafeWindowsShellArg } from '@/grok/utils/windowsShellArgs';
@@ -31,11 +32,13 @@ export async function copilotLocal(opts: {
     agentMode?: CopilotAgentMode;
 }): Promise<void> {
     const args = buildCopilotLocalArgs(opts);
+    const command = getAgentLaunchCommand('copilot');
+    args.push(...getManagedAgentLaunchPolicy('copilot', command).extraArgs);
 
     logger.debug(`[CopilotLocal] Spawning copilot with args: ${JSON.stringify(args)}`);
 
     await spawnWithTerminalGuard({
-        command: getAgentLaunchCommand('copilot'),
+        command,
         args,
         cwd: opts.path,
         env: process.env,
