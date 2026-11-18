@@ -12,8 +12,7 @@ $binary = (Resolve-Path -LiteralPath $BinaryPath).Path
 $downloader = Join-Path $PSScriptRoot 'download-internal.ps1'
 $tag = 'internal-downloader-smoke'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('hapi-download-test-' + [Guid]::NewGuid().ToString('N'))
-$script:fixtureDirectory = Join-Path $testRoot 'fixtures'
-$script:downloadCount = 0
+$downloadState = @{ FixtureDirectory = (Join-Path $testRoot 'fixtures'); Count = 0 }
 $utf8 = [Text.UTF8Encoding]::new($false)
 
 function Assert-True([bool] $Condition, [string] $Message) {
@@ -30,8 +29,8 @@ function Invoke-WebRequest {
     Assert-True ($Uri -ceq $expected) "Unexpected release URL: $Uri"
     Assert-True ($name -cin @('checksums.txt', 'release-manifest.json', 'hapi-win32-x64.zip')) 'Unexpected asset download.'
     Assert-True $UseBasicParsing.IsPresent 'Downloads must use basic parsing on Windows PowerShell.'
-    $script:downloadCount++
-    Copy-Item -LiteralPath (Join-Path $script:fixtureDirectory $name) -Destination $OutFile
+    $downloadState.Count++
+    Copy-Item -LiteralPath (Join-Path $downloadState.FixtureDirectory $name) -Destination $OutFile
 }
 
 function Write-Zip([string] $Path, [string] $EntryName, [bool] $UseBinary) {
@@ -53,7 +52,7 @@ function Write-Zip([string] $Path, [string] $EntryName, [bool] $UseBinary) {
 }
 
 function Set-Fixture([string] $Case = 'valid') {
-    $archivePath = Join-Path $script:fixtureDirectory 'hapi-win32-x64.zip'
+    $archivePath = Join-Path $downloadState.FixtureDirectory 'hapi-win32-x64.zip'
     Copy-Item -LiteralPath (Join-Path $testRoot 'valid.zip') -Destination $archivePath -Force
     if ($Case -eq 'traversal') { Write-Zip $archivePath '../escape.exe' $false }
     $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -76,12 +75,12 @@ function Set-Fixture([string] $Case = 'valid') {
         'artifact' { $manifest.artifacts[0].binary = '../hapi.exe' }
         'duplicate-artifact' { $manifest.artifacts = @($manifest.artifacts[0], $manifest.artifacts[0]) }
     }
-    $manifestPath = Join-Path $script:fixtureDirectory 'release-manifest.json'
+    $manifestPath = Join-Path $downloadState.FixtureDirectory 'release-manifest.json'
     [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8) + "`n", $utf8)
     $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($Case -eq 'manifest-checksum') { $manifestHash = 'b' * 64 }
     $checksums = "$archiveHash  hapi-win32-x64.zip`n$manifestHash  release-manifest.json`n"
-    [IO.File]::WriteAllText((Join-Path $script:fixtureDirectory 'checksums.txt'), $checksums, $utf8)
+    [IO.File]::WriteAllText((Join-Path $downloadState.FixtureDirectory 'checksums.txt'), $checksums, $utf8)
 }
 
 function Test-Rejection([string] $Case, [string] $ErrorPattern) {
@@ -104,7 +103,7 @@ function Test-Rejection([string] $Case, [string] $ErrorPattern) {
 }
 
 try {
-    [void] [IO.Directory]::CreateDirectory($script:fixtureDirectory)
+    [void] [IO.Directory]::CreateDirectory($downloadState.FixtureDirectory)
     $version = ((& $binary --version) -join "`n").Trim()
     Assert-True ($LASTEXITCODE -eq 0 -and $version -cmatch '\Ahapi version: (\S+)\z') 'Expected a real compiled HAPI executable.'
     $cliVersion = $Matches[1]
@@ -118,11 +117,11 @@ try {
     Assert-True (((Get-FileHash -LiteralPath $stagedBinary -Algorithm SHA256).Hash) -ceq ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash)) 'Staged binary differs from the real build.'
     Write-Host 'PASS: real executable download, checksums, manifest, version and help.'
 
-    $beforeDuplicate = $script:downloadCount
+    $beforeDuplicate = $downloadState.Count
     $failure = $null
     try { & $downloader -Tag $tag -DownloadDirectory $successRoot } catch { $failure = $_.Exception.Message }
     Assert-True ($null -ne $failure -and $failure -match 'Already downloaded') 'Duplicate target was not rejected.'
-    Assert-True ($script:downloadCount -eq $beforeDuplicate) 'Duplicate target attempted to download or replace files.'
+    Assert-True ($downloadState.Count -eq $beforeDuplicate) 'Duplicate target attempted to download or replace files.'
     Assert-True (((Get-FileHash -LiteralPath $stagedBinary -Algorithm SHA256).Hash) -ceq ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash)) 'Duplicate target changed the existing binary.'
     Write-Host 'PASS: an existing release is never overwritten.'
 

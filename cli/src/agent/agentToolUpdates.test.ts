@@ -20,7 +20,13 @@ afterEach(async () => {
 async function fixture(overrides: ConstructorParameters<typeof AgentToolUpdateService>[0] = {}) {
     const home = await mkdtemp(join(tmpdir(), 'hapi-agent-updates-'))
     temporaryHomes.push(home)
-    const env = { HAPI_HOME: home, PATH: '/usr/bin:/bin' }
+    // CI can install npm under a hosted toolcache rather than /usr/bin. The
+    // service still checks executable availability even with a fake installer,
+    // so provide a local executable instead of depending on the host's layout.
+    const bin = join(home, 'bin')
+    await mkdir(bin)
+    await writeFile(join(bin, 'npm'), '#!/bin/sh\nexit 99\n', { mode: 0o755 })
+    const env = { HAPI_HOME: home, PATH: bin }
     const initial = join(home, 'old-codex')
     await writeFile(initial, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
     const install = vi.fn(async (_packageName: string, _version: string, directory: string) => {
@@ -227,6 +233,15 @@ describe('AgentToolUpdateService', () => {
     it('does not replace an explicitly configured command', async () => {
         const f = await fixture({ env: { HAPI_CODEX_APP_SERVER_BIN: '/custom/codex', PATH: '/usr/bin' } })
         expect(codex(await f.service.update('codex'))).toMatchObject({ canUpdate: false, reason: 'custom_path' })
+        expect(f.install).not.toHaveBeenCalled()
+    })
+
+    it('rejects an update when npm is absent from the device PATH', async () => {
+        const f = await fixture({ env: { PATH: '' } })
+        expect(codex(await f.service.update('codex'))).toMatchObject({
+            installedVersion: '1.0.0', latestVersion: '2.0.0',
+            canUpdate: false, state: 'idle', reason: 'npm_unavailable',
+        })
         expect(f.install).not.toHaveBeenCalled()
     })
 
