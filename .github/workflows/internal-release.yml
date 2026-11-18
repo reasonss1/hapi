@@ -22,7 +22,7 @@ jobs:
     release:
         # This personal channel must never publish into the upstream repository.
         if: github.repository == 'reasonss1/hapi'
-        runs-on: windows-latest
+        runs-on: ubuntu-latest
         timeout-minutes: 45
         defaults:
             run:
@@ -74,39 +74,40 @@ jobs:
             - run: bun install --frozen-lockfile
             - run: bun run typecheck
             - run: bun run build:single-exe
-            - name: Smoke test Windows executable on Windows
+            - name: Smoke test Linux x64 executable
               run: |
-                  cli/dist-exe/bun-windows-x64/hapi.exe --version
-                  cli/dist-exe/bun-windows-x64/hapi.exe --help
-            - name: Package Windows binary, downloader and source manifest
+                  cli/dist-exe/bun-linux-x64-baseline/hapi --version
+                  cli/dist-exe/bun-linux-x64-baseline/hapi --help
+            - name: Package Linux x64 binary, downloader and source manifest
               run: |
                   python - <<'PY'
                   import hashlib
                   import json
                   import os
                   import shutil
-                  import zipfile
+                  import tarfile
                   from datetime import datetime, timezone
                   from pathlib import Path
 
                   output = Path('cli/internal-release-artifacts')
                   output.mkdir(parents=True, exist_ok=False)
-                  source = Path('cli/dist-exe/bun-windows-x64/hapi.exe')
+                  source = Path('cli/dist-exe/bun-linux-x64-baseline/hapi')
                   if not source.is_file() or source.stat().st_size == 0:
                       raise SystemExit(f'Missing or empty executable: {source}')
-                  archive = output / 'hapi-win32-x64.zip'
-                  with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as package:
-                      package.write(source, 'hapi.exe')
+                  archive = output / 'hapi-linux-x64.tar.gz'
+                  with tarfile.open(archive, 'w:gz') as package:
+                      package.add(source, arcname='hapi')
                   with archive.open('rb') as stream:
                       archive_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
                   artifacts = [{
-                      'platform': 'win32',
+                      'platform': 'linux',
                       'arch': 'x64',
                       'file': archive.name,
                       'sha256': archive_digest,
-                      'binary': 'hapi.exe',
+                      'binary': 'hapi',
                   }]
-                  shutil.copyfile('scripts/download-internal.ps1', output / 'download-internal.ps1')
+                  shutil.copyfile('scripts/download-internal.sh', output / 'download-internal.sh')
+                  (output / 'download-internal.sh').chmod(0o755)
                   manifest = {
                       'schemaVersion': 1,
                       'repository': os.environ['GITHUB_REPOSITORY'],
@@ -124,9 +125,6 @@ jobs:
                       checksums.append(f'{digest}  {path.name}\n')
                   (output / 'checksums.txt').write_text(''.join(checksums))
                   PY
-            - name: Test downloader with real Windows binary and failure fixtures
-              run: |
-                  powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/download-internal.tests.ps1 -BinaryPath cli/dist-exe/bun-windows-x64/hapi.exe
             - name: Publish personal prerelease after verifying all assets
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -187,9 +185,9 @@ jobs:
                       notes = Path(os.environ['RUNNER_TEMP']) / 'internal-release-notes.md'
                       notes.write_text(
                           f'Personal HAPI internal build from `{source_sha}`.\n\n'
-                          'Prebuilt Windows x64 CLI, Runner, Hub and web assets; no Bun or source checkout is needed on devices.\n\n'
-                          'Download `hapi-win32-x64.zip` and verify it using `checksums.txt`. '
-                          '`download-internal.ps1` downloads and verifies the Windows binary '
+                          'Prebuilt Linux x64 CLI, Runner, Hub and web assets; no Bun or source checkout is needed on devices.\n\n'
+                          'Download `hapi-linux-x64.tar.gz` and verify it using `checksums.txt`. '
+                          '`download-internal.sh` downloads and verifies the Linux binary '
                           'without stopping services or changing the active installation.\n\n'
                           'Preserve device configuration and running sessions when activating the build. '
                           'This prerelease does not publish to npm or the upstream repository.\n'
@@ -216,14 +214,19 @@ jobs:
                   with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
                       summary.write(f"Published [{tag}]({release['html_url']}) from `{source_sha}`.\n")
                   PY
-            - name: Verify real download from published Windows prerelease
-              shell: powershell
+            - name: Verify real download from published Linux x64 prerelease
               run: |
-                  $ErrorActionPreference = 'Stop'
-                  $directory = Join-Path $env:RUNNER_TEMP ('hapi-published-smoke-' + [Guid]::NewGuid().ToString('N'))
-                  & ./scripts/download-internal.ps1 -Tag $env:RELEASE_TAG -DownloadDirectory $directory
-                  $manifestPath = Join-Path (Join-Path $directory $env:RELEASE_TAG) 'release-manifest.json'
-                  $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-                  if ($manifest.commit -cne $env:SOURCE_SHA) {
-                      throw 'The downloaded release does not match the source commit built by this workflow.'
-                  }
+                  set -euo pipefail
+                  directory="$(mktemp -d "$RUNNER_TEMP/hapi-published-smoke.XXXXXXXX")"
+                  sh scripts/download-internal.sh "$RELEASE_TAG" "$directory"
+                  "$directory/$RELEASE_TAG/hapi" --help
+                  DOWNLOADED_MANIFEST="$directory/$RELEASE_TAG/release-manifest.json" python - <<'PY'
+                  import json
+                  import os
+                  from pathlib import Path
+
+                  manifest = json.loads(Path(os.environ['DOWNLOADED_MANIFEST']).read_text())
+                  if manifest['commit'] != os.environ['SOURCE_SHA']:
+                      raise SystemExit('The downloaded release does not match the source commit built by this workflow.')
+                  print('Published Linux x64 download verified against source commit:', manifest['commit'])
+                  PY
