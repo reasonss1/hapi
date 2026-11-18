@@ -12,6 +12,8 @@ One-click updates currently support Codex, Claude Code, Pi, and GitHub Copilot o
 
 An older HAPI runner must first be upgraded using its existing installation method to enable the remote update RPC. The device page displays this requirement. Updating agent tools does not update the HAPI hub or runner itself.
 
+For this personal fork, [internal release binaries](./internal-releases.md) let devices update without downloading or compiling the source.
+
 Managed versions live under `$HAPI_HOME/agent-tools` (default `~/.hapi/agent-tools`). Existing system installations, login data, and agent settings stay in place. Older managed versions are retained for running sessions; automatic cleanup is deliberately deferred.
 
 Agent CLI versions and model access are separate: updating a CLI can expose newly supported models, but the available models also depend on your account and provider.

@@ -1,0 +1,204 @@
+name: Internal Release
+
+on:
+    push:
+        tags:
+            - 'internal-*'
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: Existing internal-* tag to build and release
+                required: true
+                type: string
+
+permissions:
+    contents: read
+
+concurrency:
+    group: internal-release-${{ inputs.tag || github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    release:
+        # This personal channel must never publish into the upstream repository.
+        if: github.repository == 'reasonss1/hapi'
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        permissions:
+            contents: write
+        steps:
+            - name: Resolve internal tag
+              id: release
+              env:
+                  REQUESTED_TAG: ${{ inputs.tag }}
+              run: |
+                  set -euo pipefail
+                  if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+                      tag="$REQUESTED_TAG"
+                  else
+                      [[ "$GITHUB_REF_TYPE" == tag ]]
+                      tag="$GITHUB_REF_NAME"
+                  fi
+                  if [[ ! "$tag" =~ ^internal-[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+                      echo '::error::Expected an internal-* tag with only letters, digits, dots, underscores and hyphens.'
+                      exit 1
+                  fi
+                  printf 'tag=%s\nref=refs/tags/%s\n' "$tag" "$tag" >> "$GITHUB_OUTPUT"
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ steps.release.outputs.ref }}
+                  fetch-depth: 0
+                  persist-credentials: false
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: '1.4.4'
+            - name: Verify source identity
+              env:
+                  RELEASE_TAG: ${{ steps.release.outputs.tag }}
+              run: |
+                  set -euo pipefail
+                  source_sha="$(git rev-parse HEAD)"
+                  tag_sha="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+                  [[ "$source_sha" == "$tag_sha" ]]
+                  if [[ "$GITHUB_EVENT_NAME" == push && "$source_sha" != "$GITHUB_SHA" ]]; then
+                      echo '::error::The tag no longer points at the triggering source commit.'
+                      exit 1
+                  fi
+                  printf 'SOURCE_SHA=%s\nRELEASE_TAG=%s\n' "$source_sha" "$RELEASE_TAG" >> "$GITHUB_ENV"
+            - run: bun install --frozen-lockfile
+            - run: bun run typecheck
+            - run: bun run build:single-exe:all
+            - name: Smoke test Linux executable
+              run: cli/dist-exe/bun-linux-x64-baseline/hapi --version
+            - name: Package binaries, downloader and source manifest
+              run: |
+                  python3 - <<'PY'
+                  import hashlib
+                  import json
+                  import os
+                  import shutil
+                  import tarfile
+                  import zipfile
+                  from datetime import datetime, timezone
+                  from pathlib import Path
+
+                  output = Path('cli/internal-release-artifacts')
+                  output.mkdir(parents=True, exist_ok=False)
+                  targets = [
+                      ('darwin', 'arm64', 'bun-darwin-arm64'),
+                      ('darwin', 'x64', 'bun-darwin-x64'),
+                      ('linux', 'arm64', 'bun-linux-arm64'),
+                      ('linux', 'x64', 'bun-linux-x64-baseline'),
+                      ('win32', 'x64', 'bun-windows-x64'),
+                  ]
+                  artifacts = []
+                  for platform, arch, target in targets:
+                      binary = 'hapi.exe' if platform == 'win32' else 'hapi'
+                      source = Path('cli/dist-exe') / target / binary
+                      if not source.is_file() or source.stat().st_size == 0:
+                          raise SystemExit(f'Missing or empty executable: {source}')
+                      extension = 'zip' if platform == 'win32' else 'tar.gz'
+                      archive = output / f'hapi-{platform}-{arch}.{extension}'
+                      if extension == 'zip':
+                          with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as package:
+                              package.write(source, binary)
+                      else:
+                          with tarfile.open(archive, 'w:gz') as package:
+                              package.add(source, arcname=binary)
+                      artifacts.append({
+                          'platform': platform,
+                          'arch': arch,
+                          'file': archive.name,
+                          'sha256': hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest(),
+                          'binary': binary,
+                      })
+                  shutil.copyfile('scripts/download-internal.sh', output / 'download-internal.sh')
+                  (output / 'download-internal.sh').chmod(0o755)
+                  manifest = {
+                      'schemaVersion': 1,
+                      'repository': os.environ['GITHUB_REPOSITORY'],
+                      'tag': os.environ['RELEASE_TAG'],
+                      'commit': os.environ['SOURCE_SHA'],
+                      'cliVersion': json.loads(Path('cli/package.json').read_text())['version'],
+                      'builtAt': datetime.now(timezone.utc).isoformat(),
+                      'artifacts': artifacts,
+                  }
+                  (output / 'release-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+                  checksums = []
+                  for path in sorted(output.iterdir()):
+                      with path.open('rb') as stream:
+                          digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                      checksums.append(f'{digest}  {path.name}\n')
+                  (output / 'checksums.txt').write_text(''.join(checksums))
+                  PY
+            - name: Publish personal prerelease after verifying all assets
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  python3 - <<'PY'
+                  import json
+                  import os
+                  import subprocess
+                  import urllib.error
+                  import urllib.request
+                  from pathlib import Path
+
+                  repository = os.environ['GITHUB_REPOSITORY']
+                  tag = os.environ['RELEASE_TAG']
+                  source_sha = os.environ['SOURCE_SHA']
+                  if repository != 'reasonss1/hapi':
+                      raise SystemExit('This release channel is restricted to reasonss1/hapi')
+                  base = f'https://api.github.com/repos/{repository}'
+                  def api(path):
+                      request = urllib.request.Request(base + path, headers={
+                          'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                          'Accept': 'application/vnd.github+json',
+                          'X-GitHub-Api-Version': '2022-11-28',
+                      })
+                      try:
+                          with urllib.request.urlopen(request, timeout=60) as response:
+                              return json.load(response)
+                      except urllib.error.HTTPError as error:
+                          if error.code == 404:
+                              return None
+                          raise
+                  def verify_tag():
+                      commit = api('/commits/' + tag)
+                      if not commit or commit['sha'] != source_sha:
+                          raise SystemExit('Remote tag moved or disappeared; refusing to publish')
+                  def gh(*args):
+                      subprocess.run(['gh', 'release', *args, '--repo', repository], check=True)
+
+                  verify_tag()
+                  release = api('/releases/tags/' + tag)
+                  if release and not release['draft']:
+                      raise SystemExit('Release is already public; create a new tag instead of replacing its assets')
+                  if release is None:
+                      notes = Path(os.environ['RUNNER_TEMP']) / 'internal-release-notes.md'
+                      notes.write_text(
+                          f'Personal HAPI internal build from `{source_sha}`.\n\n'
+                          'Prebuilt CLI, Runner, Hub and web assets; no Bun or source checkout is needed on devices.\n\n'
+                          'Download the platform archive and verify it using `checksums.txt`. '
+                          'On macOS/Linux, `download-internal.sh` downloads and verifies the matching binary '
+                          'without stopping services or changing the active installation.\n\n'
+                          'Preserve device configuration and running sessions when activating the build. '
+                          'This prerelease does not publish to npm or the upstream repository.\n'
+                      )
+                      gh('create', tag, '--draft', '--prerelease', '--verify-tag',
+                         '--target', source_sha, '--title', f'HAPI internal {tag}', '--notes-file', str(notes))
+                  files = sorted(Path('cli/internal-release-artifacts').iterdir())
+                  gh('upload', tag, *map(str, files), '--clobber')
+                  release = api('/releases/tags/' + tag)
+                  expected = {path.name: path.stat().st_size for path in files}
+                  actual = {asset['name']: asset['size'] for asset in release['assets']}
+                  if actual != expected:
+                      raise SystemExit('Uploaded assets are incomplete or unexpected; leaving the release as a draft')
+                  verify_tag()
+                  gh('edit', tag, '--draft=false', '--prerelease', '--latest=false')
+                  release = api('/releases/tags/' + tag)
+                  if release['draft'] or not release['prerelease']:
+                      raise SystemExit('Release did not become a prerelease')
+                  print(release['html_url'])
+                  with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                      summary.write(f"Published [{tag}]({release['html_url']}) from `{source_sha}`.\n")
+                  PY
