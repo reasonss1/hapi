@@ -122,6 +122,7 @@ $lockPath = Join-Path $root ".download-$Tag.lock"
 $stage = $null
 $lock = $null
 $previousTls = [Net.ServicePointManager]::SecurityProtocol
+$previousProgress = $ProgressPreference
 
 try {
     [void] [IO.Directory]::CreateDirectory($root)
@@ -138,6 +139,7 @@ try {
     $stage = Join-Path $root ('.download-' + [Guid]::NewGuid().ToString('N'))
     [void] [IO.Directory]::CreateDirectory($stage)
     [Net.ServicePointManager]::SecurityProtocol = $previousTls -bor [Net.SecurityProtocolType]::Tls12
+    $ProgressPreference = 'SilentlyContinue'
 
     Write-Host "Downloading $Tag for Windows x64..."
     Save-ReleaseAsset 'checksums.txt' $stage
@@ -202,24 +204,41 @@ try {
         } finally { $inputStream.Dispose() }
     } finally { $archive.Dispose() }
 
-    $version = (Invoke-BinaryProbe $binaryPath '--version' $stage).Trim()
+    $version = (Invoke-BinaryProbe $binaryPath '--version' $root).Trim()
     if ($version -cne ('hapi version: ' + $manifest.cliVersion)) {
         throw 'The executable version does not match the release manifest.'
     }
-    $help = Invoke-BinaryProbe $binaryPath '--help' $stage
+    $help = Invoke-BinaryProbe $binaryPath '--help' $root
     if (-not $help.Contains('HAPI - Coding agents with remote control') -or $help -notmatch '(?m)^Usage:') {
         throw 'The staged executable did not return the expected HAPI help.'
     }
     Remove-Item -LiteralPath $archivePath -Force
     # Directory.Move is a same-volume rename and refuses an existing target;
     # unlike Move-Item, it cannot nest a staging directory inside an old tag.
-    [IO.Directory]::Move($stage, $destination)
+    # Windows scanners or recently exited executables can hold the directory
+    # briefly. Retry the rename without deleting or replacing any destination.
+    $moved = $false
+    for ($attempt = 1; $attempt -le 20; $attempt++) {
+        try {
+            [IO.Directory]::Move($stage, $destination)
+            $moved = $true
+            break
+        } catch {
+            if (Test-Path -LiteralPath $destination) { throw }
+            $cause = $_.Exception
+            while ($null -ne $cause.InnerException) { $cause = $cause.InnerException }
+            if (($cause -isnot [IO.IOException] -and $cause -isnot [UnauthorizedAccessException]) -or $attempt -eq 20) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    if (-not $moved) { throw 'Could not finalize the verified download; current HAPI was not changed.' }
     $stage = $null
     Write-Host "Verified binary: $(Join-Path $destination 'hapi.exe')"
     Write-Host "Source commit: $($manifest.commit)"
     Write-Host 'Download complete. The current installation, services and running sessions have not been changed.'
 } finally {
     [Net.ServicePointManager]::SecurityProtocol = $previousTls
+    $ProgressPreference = $previousProgress
     try {
         if ($null -ne $stage -and [IO.Directory]::Exists($stage)) {
             Remove-Item -LiteralPath $stage -Recurse -Force
