@@ -31,7 +31,6 @@ function newStore(): Store {
     return store
 }
 
-let homeDir = ''
 let previousHapiHome: string | undefined
 let distDir = ''
 let embeddedAssetMap = new Map<string, EmbeddedWebAsset>()
@@ -45,7 +44,10 @@ function writeFixture(relPath: string, content: string | Uint8Array): string {
 
 beforeAll(async () => {
     previousHapiHome = process.env.HAPI_HOME
-    homeDir = mkdtempSync(join(tmpdir(), 'hapi-web-server-home-'))
+    const homeDir = mkdtempSync(join(tmpdir(), 'hapi-web-server-home-'))
+    // Configuration is a process-wide singleton that later test files reuse.
+    // Keep its backing directory alive until those files have also finished.
+    process.once('exit', () => rmSync(homeDir, { recursive: true, force: true }))
     process.env.HAPI_HOME = homeDir
     await createConfiguration()
 
@@ -80,9 +82,6 @@ afterAll(() => {
         delete process.env.HAPI_HOME
     } else {
         process.env.HAPI_HOME = previousHapiHome
-    }
-    if (homeDir) {
-        rmSync(homeDir, { recursive: true, force: true })
     }
     if (distDir) {
         rmSync(distDir, { recursive: true, force: true })
