@@ -251,9 +251,9 @@ describe('SettingsMachinesPage', () => {
         expect(JSON.parse(window.localStorage.getItem('hapi-machine-labels')!)).toEqual({ 'machine-1': 'Keep device' })
     })
 
-    it('links to the source of the deployed personal-fork branch', () => {
+    it('links to the corresponding source archive of the deployed build', () => {
         renderPage()
 
-        expect(screen.getByRole('link', { name: 'View source' }).getAttribute('href')).toBe('https://github.com/reasonss1/hapi/tree/deploy/agent-updates-preserve-custom')
+        expect(screen.getByRole('link', { name: 'View source' }).getAttribute('href')).toBe('/hapi-local-source.tar.gz')
     })
 })
