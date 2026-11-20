@@ -81,6 +81,11 @@ export type {
     AttachmentMetadata,
     BackgroundTask,
     CodexCollaborationMode,
+    ExternalRef,
+    GithubPrChecks,
+    GithubPrExternalRef,
+    GithubPrMerge,
+    GithubPrOpenState,
     CopilotAgentMode,
     Metadata,
     PermissionMode,
@@ -109,6 +114,8 @@ export type {
     HapiSessionExportWarning
 } from '@hapi/protocol/sessionExport'
 
+export type { ForkBoundary, ForkPreviewResponse } from '@hapi/protocol/forkBoundary'
+
 export type SessionMetadataSummary = {
     path: string
     host: string
@@ -128,6 +135,7 @@ export type SessionMetadataSummary = {
             rewindToMessage?: boolean
         }
     }
+    conversationBranch?: NonNullable<Session['metadata']>['conversationBranch']
     conversationHistoryPoints?: Record<string, true>
     conversationHistoryIndexes?: Record<string, number>
     conversationHistoryTurns?: Record<string, string>

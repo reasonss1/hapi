@@ -10,6 +10,7 @@ export const queryKeys = {
     passkeys: ['passkeys'] as const,
     usageSummary: (range: string, timeZone: string) => ['usage-summary', range, timeZone] as const,
     usageQuotas: ['usage-quotas'] as const,
+    machineAgentQuotas: (machineId: string) => ['machine-agent-quotas', machineId] as const,
     machineCodexModels: (machineId: string) => ['machine-codex-models', machineId] as const,
     machineAgentAvailability: (machineId: string) => ['machine-agent-availability', machineId] as const,
     sessionCodexModels: (sessionId: string) => ['session-codex-models', sessionId] as const,
@@ -48,4 +49,5 @@ export const queryKeys = {
     machineClaudeModels: (machineId: string) => ['machine-claude-models', machineId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,
     scratchlist: (sessionId: string) => ['scratchlist', sessionId] as const,
+    features: ['features'] as const,
 }
