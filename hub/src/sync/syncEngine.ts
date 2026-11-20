@@ -2736,6 +2736,7 @@ export class SyncEngine {
             const directory = source.metadata?.path
             const machine = machineId ? this.getMachineByNamespace(machineId, namespace) : undefined
             if (!machineId || !directory || !machine?.active) throw new Error('Source machine must be online')
+            this.assertMachineNotDeleting(machineId, namespace)
             if (request.model) {
                 const catalog = request.agent === 'claude'
                     ? await this.listClaudeModelsForMachine(machineId)
@@ -2761,7 +2762,8 @@ export class SyncEngine {
                 requestFingerprint: fingerprint, state: 'launching' as const,
                 createdAt: Date.now(), messageCount: reference.messageCount, workspace: request.workspace
             }
-            this.sessionCache.getOrCreateSession(`machine-spawn:${childId}`, {
+            // Use the guarded entry point to recheck device cleanup after model discovery.
+            this.getOrCreateSession(`machine-spawn:${childId}`, {
                 path: directory, host: source.metadata?.host ?? 'unknown', machineId,
                 flavor: request.agent, startedBy: 'runner', startedFromRunner: true,
                 forkedFrom: sessionId, conversationBranch: branch,

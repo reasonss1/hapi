@@ -152,6 +152,84 @@ describe('portable branch lifecycle', () => {
         } finally { engine.stop() }
     })
 
+    it('refuses a branch while device cleanup is waiting for its runner to stop', async () => {
+        const { engine, source, rpc } = fixture()
+        engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'completed' })
+        let releaseStop!: () => void
+        let stopEntered!: () => void
+        const stopGate = new Promise<void>(resolve => { releaseStop = resolve })
+        const stopping = new Promise<void>(resolve => { stopEntered = resolve })
+        let runnerSocket: string | null = 'runner-socket'
+        let catalogCalls = 0
+        let spawnCalls = 0
+        rpc.getMachineRunnerSocketId = () => runnerSocket
+        rpc.stopRunner = async () => {
+            stopEntered()
+            await stopGate
+            runnerSocket = null
+        }
+        rpc.listCodexModelsForMachine = async () => {
+            catalogCalls++
+            return { success: true, models: [{ id: 'target-model', displayName: 'Target', isDefault: true }] }
+        }
+        rpc.spawnSession = async () => {
+            spawnCalls++
+            return { type: 'error', message: 'unexpected spawn', childStarted: false }
+        }
+        const deleting = engine.deleteMachine('machine', 'default')
+        try {
+            await stopping
+            expect(await engine.branchConversation(source.id, 'default', request)).toEqual({
+                type: 'error', message: 'Device cleanup is in progress; retry after it finishes.'
+            })
+            expect(catalogCalls).toBe(0)
+            expect(spawnCalls).toBe(0)
+            expect(engine.getSessionsByNamespace('default')).toHaveLength(1)
+            releaseStop()
+            expect(await deleting).toEqual({ ok: true, deletedSessions: 1 })
+        } finally {
+            releaseStop()
+            await deleting.catch(() => undefined)
+            engine.stop()
+        }
+    })
+
+    it('rechecks the device cleanup lock after asynchronous model discovery before reserving a child', async () => {
+        const { engine, source, rpc } = fixture()
+        const deletions = (engine as unknown as { machineDeletions: Set<string> }).machineDeletions
+        const deletionKey = JSON.stringify(['default', 'machine'])
+        let releaseCatalog!: () => void
+        let catalogEntered!: () => void
+        const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve })
+        const discovering = new Promise<void>(resolve => { catalogEntered = resolve })
+        let spawnCalls = 0
+        rpc.listCodexModelsForMachine = async () => {
+            catalogEntered()
+            await catalogGate
+            return { success: true, models: [{ id: 'target-model', displayName: 'Target', isDefault: true }] }
+        }
+        rpc.spawnSession = async () => {
+            spawnCalls++
+            return { type: 'error', message: 'unexpected spawn', childStarted: false }
+        }
+        const branching = engine.branchConversation(source.id, 'default', request)
+        try {
+            await discovering
+            deletions.add(deletionKey)
+            releaseCatalog()
+            expect(await branching).toEqual({
+                type: 'error', message: 'Device cleanup is in progress; retry after it finishes.'
+            })
+            expect(spawnCalls).toBe(0)
+            expect(engine.getSessionsByNamespace('default')).toHaveLength(1)
+        } finally {
+            deletions.delete(deletionKey)
+            releaseCatalog()
+            await branching.catch(() => undefined)
+            engine.stop()
+        }
+    })
+
     it('cleans up only when runner confirms no child was started', async () => {
         const { engine, source, rpc } = fixture()
         let childId: string | undefined
