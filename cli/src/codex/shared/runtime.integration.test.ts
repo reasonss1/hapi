@@ -13,6 +13,7 @@ import { isProcessAlive } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
 import { asyncQuestionsForItem } from './asyncQuestions';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { PluginManager } from '@/plugins/manager';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
 const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
@@ -38,7 +39,7 @@ class MockSession extends EventEmitter {
     syncNativeQueuedMessage() {}
     sendSessionDeath() { this.dead = true; } async flush() {} close() {} isPending() { return false; }
 }
-vi.mock('@/configuration', () => ({ configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'http://mock-hub', cliApiToken: 'test' } }));
+vi.mock('@/configuration', () => ({ resolveHapiHomeDir: () => state.home, configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'http://mock-hub', cliApiToken: 'test' } }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: (...args: unknown[]) => { if (process.env.HAPI_DEBUG_SHARED_TEST) console.log(...args); }, warn: vi.fn(), info: vi.fn(), debugLargeJson: vi.fn() } }));
 vi.mock('@/agent/sessionFactory', () => ({ bootstrapSession: async (options: { workingDirectory: string; metadataOverrides: Partial<Metadata> }) => {
     await state.beforeBootstrap?.();
@@ -55,6 +56,49 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => 
 // Explicit opt-in: installed official binary, entirely isolated CODEX_HOME, mock Responses API only.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Codex shared runtime', () => {
     afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
+    it('loads a device MCP plugin into a new shared Codex session', async () => {
+        const home = await mkdtemp('/tmp/hapi-shared-plugins-'); state.home = home;
+        const cwd = join(home, 'work'); await mkdir(cwd);
+        const codexDir = join(home, 'codex'); await mkdir(codexDir);
+        vi.stubEnv('CODEX_HOME', codexDir);
+        vi.stubEnv('HAPI_ENABLE_PLUGIN_MANAGEMENT', '1');
+        const fixture = join(home, 'tool.cjs');
+        await writeFile(fixture, `
+            const readline = require('node:readline');
+            readline.createInterface({ input: process.stdin }).on('line', line => {
+                const { id, method, params } = JSON.parse(line);
+                if (id === undefined) return;
+                const responses = {
+                    initialize: { protocolVersion: params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } },
+                    'tools/list': { tools: [{ name: 'hello', description: 'Smoke test tool', inputSchema: { type: 'object' } }] }
+                };
+                process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result: responses[method] ?? {} }) + '\\n');
+            });
+        `);
+        const manager = new PluginManager(home, 'test');
+        const result = await manager.manage({ action: 'addMcp', agent: 'codex', entry: {
+            name: 'fixture', enabled: true, config: { transport: 'stdio', command: process.execPath, args: [fixture] }
+        } });
+        expect(result.ok).toBe(true);
+        const abort = new AbortController();
+        let onReady!: (ready: import('./runtime').RuntimeReady) => void;
+        const ready = new Promise<import('./runtime').RuntimeReady>(resolve => { onReady = resolve; });
+        const { runSharedRuntime } = await import('./runtime');
+        const running = runSharedRuntime({ workingDirectory: cwd, startedBy: 'runner' }, onReady, abort.signal);
+        let client: CodexAppServerClient | undefined;
+        try {
+            const { runtime, sessionId } = await Promise.race([ready, running.then(() => { throw new Error('Runtime ended'); })]);
+            client = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token, cwd });
+            await initializeSharedClient(client);
+            const status = record(await client.request('mcpServerStatus/list', {
+                threadId: runtime.sessions[sessionId].threadId, serverName: 'hapi-plugin-fixture', detail: 'toolsAndAuthOnly'
+            }));
+            expect(status.data).toContainEqual(expect.objectContaining({ name: 'hapi-plugin-fixture', tools: expect.objectContaining({ hello: expect.anything() }) }));
+        } finally {
+            await client?.disconnect(); abort.abort(); await running.catch(() => {});
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 45_000);
     it('projects native async questions and delivers answers during generation and after completion', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-async-'); state.home = home;
         const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);

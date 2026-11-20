@@ -195,7 +195,7 @@ export default function SettingsMachinesPage() {
                     ))
                 )}
             </SettingsSection>
-            <a href="https://github.com/reasonss1/hapi/tree/deploy/agent-updates-preserve-custom" target="_blank" rel="noopener noreferrer" className="text-xs text-[var(--app-link)] hover:underline">
+            <a href="/hapi-local-source.tar.gz" target="_blank" rel="noopener noreferrer" className="text-xs text-[var(--app-link)] hover:underline">
                 {t('settings.machines.source')}
             </a>
         </SettingsPageContent>

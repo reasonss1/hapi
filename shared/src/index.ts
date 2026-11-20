@@ -55,3 +55,4 @@ export type * from './types'
 
 export * from './agentTools'
 export * from './passkey'
+export * from './plugins'
