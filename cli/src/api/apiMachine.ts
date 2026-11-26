@@ -231,7 +231,7 @@ export class ApiMachineClient {
             async () => getAgentAvailabilityResponse()
         )
 
-        const agentToolUpdates = new AgentToolUpdateService()
+        const agentToolUpdates = new AgentToolUpdateService({ toolIds: ['codex'] })
         this.rpcHandlerManager.registerHandler(RPC_METHODS.AgentTools, async (params: unknown) => {
             const refresh = typeof params === 'object' && params !== null
                 && 'refresh' in params && params.refresh === true

@@ -15,12 +15,12 @@ const updateTool = vi.fn()
 const api = { getMachineAgentTools: getTools, updateMachineAgentTool: updateTool } as unknown as ApiClient
 const clients: QueryClient[] = []
 
-function machine(supported = true): Machine {
+function machine(capabilities: string[] = [MACHINE_CAPABILITIES.CodexAgentToolUpdates]): Machine {
     return {
         id: 'device-1', active: true,
         metadata: {
             host: 'workstation', platform: 'linux', happyCliVersion: '0.36.0',
-            capabilities: supported ? [MACHINE_CAPABILITIES.AgentToolUpdates] : [],
+            capabilities,
         },
     } as Machine
 }
@@ -36,7 +36,7 @@ function response(tools: AgentToolStatus[] = [tool()]): AgentToolsResponse {
     return { tools, checkedAt: 1 }
 }
 
-function renderTools(options: { supported?: boolean; cached?: AgentToolsResponse } = {}) {
+function renderTools(options: { capabilities?: string[]; cached?: AgentToolsResponse } = {}) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
     clients.push(queryClient)
     if (options.cached) queryClient.setQueryData(queryKeys.machineAgentTools('device-1'), options.cached)
@@ -46,7 +46,7 @@ function renderTools(options: { supported?: boolean; cached?: AgentToolsResponse
                 locale: 'en', setLocale: () => {},
                 t: (key, params) => (en as Record<string, string>)[key]?.replace(/\{(\w+)\}/g, (match, name) => String(params?.[name] ?? match)) ?? key,
             }}>
-                <MachineAgentTools api={api} machine={machine(options.supported)} />
+                <MachineAgentTools api={api} machine={machine(options.capabilities)} />
             </I18nContext.Provider>
         </QueryClientProvider>,
     )
@@ -66,18 +66,18 @@ describe('MachineAgentTools', () => {
         vi.restoreAllMocks()
     })
 
-    it('shows the runner version and explains the one-time bootstrap for older runners', () => {
-        renderTools({ supported: false })
+    it('shows a compatible build hint and skips the status request on a legacy Runner', () => {
+        renderTools({ capabilities: [MACHINE_CAPABILITIES.AgentToolUpdates] })
         expect(screen.getByText('HAPI runner 0.36.0')).toBeTruthy()
-        expect(screen.getByText('This Runner lacks remote agent updates. If your platform has a custom HAPI build with this capability, install it using “Add new device”.')).toBeTruthy()
+        expect(screen.getByText('This Runner needs a build that checks updates for Codex only. If your platform has a compatible custom HAPI build, install it using “Add new device”.')).toBeTruthy()
         expect(getTools).not.toHaveBeenCalled()
         expect(screen.queryByRole('button', { name: 'Check for updates' })).toBeNull()
     })
 
-    it('checks versions automatically and only offers updates for installed supported tools', async () => {
+    it('checks Codex automatically and shows no other updates from a mixed response', async () => {
         getTools.mockResolvedValue(response([
             tool(),
-            tool({ id: 'claude', name: 'Claude Code', installedVersion: '2.0.0', latestVersion: '2.0.0', canUpdate: false }),
+            tool({ id: 'claude', name: 'Claude Code', installedVersion: '2.0.0', latestVersion: '2.1.0' }),
             tool({ id: 'pi', name: 'Pi', installedVersion: null, latestVersion: null, canUpdate: false, reason: 'not_installed' }),
         ]))
         renderTools()
@@ -85,21 +85,22 @@ describe('MachineAgentTools', () => {
         expect(getTools).toHaveBeenCalledWith('device-1', true)
         expect(screen.getByText('1.0.0')).toBeTruthy()
         expect(screen.getByText('Latest 1.1.0')).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'Update all' })).toBeNull()
+        expect(screen.queryByText('Claude Code')).toBeNull()
         expect(screen.queryByRole('button', { name: 'Update Claude Code' })).toBeNull()
-        expect(screen.getByText('Up to date')).toBeTruthy()
         expect(screen.queryByText('Pi')).toBeNull()
         expect(screen.getByText('Existing sessions keep running. New sessions use the updated version.')).toBeTruthy()
     })
 
-    it('keeps detected tools visible when checking their version would interrupt a session', async () => {
+    it('keeps Codex visible when checking its version would interrupt a session', async () => {
         getTools.mockResolvedValue(response([
-            tool({ id: 'cursor', name: 'Cursor', installedVersion: null, latestVersion: null, canUpdate: false, reason: 'manual_version' }),
+            tool({ installedVersion: null, latestVersion: null, canUpdate: false, reason: 'manual_version' }),
         ]))
         renderTools()
-        expect(await screen.findByText('Cursor')).toBeTruthy()
+        expect(await screen.findByText('Codex')).toBeTruthy()
         expect(screen.getByText('Check this tool’s version on the device.')).toBeTruthy()
-        expect(screen.queryByRole('button', { name: 'Update Cursor' })).toBeNull()
-        expect(screen.queryByText('No supported agents detected on this device.')).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Update Codex' })).toBeNull()
+        expect(screen.queryByText('Codex was not detected on this device.')).toBeNull()
     })
 
     it('accepts one update despite repeated clicks, then shows background status', async () => {
@@ -117,17 +118,23 @@ describe('MachineAgentTools', () => {
         expect(screen.queryByRole('button', { name: 'Update Codex' })).toBeNull()
     })
 
-    it('updates every available tool even if one update request fails', async () => {
-        const claude = tool({ id: 'claude', name: 'Claude Code', installedVersion: '2.0.0', latestVersion: '2.1.0' })
+    it('allows checking and updating Codex while another tool is updating', async () => {
+        const claude = tool({ id: 'claude', name: 'Claude Code', state: 'installing', canUpdate: false })
         getTools.mockResolvedValue(response([tool(), claude]))
-        updateTool.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(response([
-            tool(), { ...claude, state: 'installing', canUpdate: false },
-        ]))
+        updateTool.mockRejectedValueOnce(new Error('offline'))
         renderTools()
-        fireEvent.click(await screen.findByRole('button', { name: 'Update all' }))
-        await waitFor(() => expect(updateTool).toHaveBeenCalledTimes(2))
-        expect(updateTool.mock.calls.map((call) => call[1])).toEqual(['codex', 'claude'])
+        const updateCodex = await screen.findByRole('button', { name: 'Update Codex' })
+        expect(screen.getByRole('button', { name: 'Check for updates' })).toBeEnabled()
+        fireEvent.click(updateCodex)
         expect(await screen.findByRole('alert')).toHaveTextContent('Could not confirm the update.')
+        expect(updateTool.mock.calls).toEqual([['device-1', 'codex']])
+    })
+
+    it('shows the Codex empty state if only other agents are detected', async () => {
+        getTools.mockResolvedValue(response([tool({ id: 'claude', name: 'Claude Code' })]))
+        renderTools()
+        expect(await screen.findByText('Codex was not detected on this device.')).toBeTruthy()
+        expect(screen.queryByText('Claude Code')).toBeNull()
     })
 
     it('keeps the current version visible when an update fails', async () => {
@@ -151,7 +158,7 @@ describe('MachineAgentTools', () => {
         renderTools()
         expect(await screen.findByText('Codex')).toBeTruthy()
         expect(screen.getByText(en['settings.machines.tools.checkFailed'])).toBeTruthy()
-        expect(screen.queryByText('No supported agents detected on this device.')).toBeNull()
+        expect(screen.queryByText('Codex was not detected on this device.')).toBeNull()
     })
 
     it('resumes polling a cached update after navigating back', async () => {
@@ -169,11 +176,16 @@ describe('MachineAgentTools', () => {
         getTools.mockImplementation(() => new Promise<AgentToolsResponse>((resolve) => { resolveCheck = resolve }))
         const { queryClient } = renderTools()
         queryClient.setQueryData(queryKeys.machineCodexModels('device-1'), { models: ['old-model'] })
+        queryClient.setQueryData(queryKeys.machineClaudeModels('device-1'), { models: ['claude-model'] })
         queryClient.setQueryData(queryKeys.machineAgentAvailability('device-1'), { agents: [] })
         queryClient.setQueryData(queryKeys.sessionCodexModels('existing-session'), { models: ['old-model'] })
-        resolveCheck(response([tool({ installedVersion: '1.1.0', canUpdate: false, state: 'updated' })]))
+        resolveCheck(response([
+            tool({ installedVersion: '1.1.0', canUpdate: false, state: 'updated' }),
+            tool({ id: 'claude', name: 'Claude Code', state: 'updated' }),
+        ]))
         await waitFor(() => expect(queryClient.getQueryState(queryKeys.machineCodexModels('device-1'))?.isInvalidated).toBe(true))
         expect(queryClient.getQueryState(queryKeys.machineAgentAvailability('device-1'))?.isInvalidated).toBe(true)
+        expect(queryClient.getQueryState(queryKeys.machineClaudeModels('device-1'))?.isInvalidated).toBe(false)
         expect(queryClient.getQueryState(queryKeys.sessionCodexModels('existing-session'))?.isInvalidated).toBe(false)
     })
 

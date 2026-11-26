@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { AgentToolId, AgentToolsResponse, AgentToolStatus } from '@hapi/protocol/agentTools'
+import type { AgentToolsResponse, AgentToolStatus } from '@hapi/protocol/agentTools'
 import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import type { ApiClient } from '@/api/client'
 import type { Machine } from '@/types/api'
@@ -8,8 +8,12 @@ import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 import { queryKeys } from '@/lib/query-keys'
 import { useTranslation } from '@/lib/use-translation'
 
-function isUpdating(tool: AgentToolStatus): boolean {
-    return tool.state === 'installing' || tool.state === 'retrying'
+function getCodexStatus(response: AgentToolsResponse | undefined): AgentToolStatus | undefined {
+    return response?.tools.find((tool) => tool.id === 'codex')
+}
+
+function isUpdating(tool: AgentToolStatus | undefined): boolean {
+    return tool?.state === 'installing' || tool?.state === 'retrying'
 }
 
 function isVisibleTool(tool: AgentToolStatus): boolean {
@@ -34,7 +38,7 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
     const operationRef = useRef(false)
     const refreshedVersions = useRef(new Set<string>())
     const [error, setError] = useState<string | null>(null)
-    const supported = machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentToolUpdates) === true
+    const supported = machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.CodexAgentToolUpdates) === true
     const enabled = Boolean(api && machine.active && supported && isOnline)
     const queryKey = queryKeys.machineAgentTools(machine.id)
     const query = useQuery({
@@ -43,13 +47,13 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
             if (!api) throw new Error('API unavailable')
             const cached = queryClient.getQueryData<AgentToolsResponse>(queryKey)
             // Status polling must not repeat registry lookups during installation.
-            const refresh = !cached || !cached.tools.some(isUpdating)
+            const refresh = !isUpdating(getCodexStatus(cached))
             return await api.getMachineAgentTools(machine.id, refresh)
         },
         enabled,
         staleTime: 30_000,
         retry: false,
-        refetchInterval: (current) => current.state.data?.tools.some(isUpdating) ? 2_000 : false,
+        refetchInterval: (current) => isUpdating(getCodexStatus(current.state.data)) ? 2_000 : false,
     })
     const refreshMutation = useMutation({
         mutationFn: async () => {
@@ -65,22 +69,15 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
         onSettled: () => { operationRef.current = false },
     })
     const updateMutation = useMutation({
-        mutationFn: async (tools: AgentToolId[]) => {
+        mutationFn: async () => {
             if (!api) throw new Error('API unavailable')
             await queryClient.cancelQueries({ queryKey })
-            let failed = false
-            for (const tool of tools) {
-                try {
-                    const data = await api.updateMachineAgentTool(machine.id, tool)
-                    queryClient.setQueryData(queryKey, data)
-                } catch {
-                    // A failed request for one tool must not prevent the others.
-                    failed = true
-                }
-            }
-            if (failed) throw new Error('Update request failed')
+            return await api.updateMachineAgentTool(machine.id, 'codex')
         },
-        onSuccess: () => setError(null),
+        onSuccess: (data) => {
+            queryClient.setQueryData(queryKey, data)
+            setError(null)
+        },
         onError: () => {
             setError(t('settings.machines.tools.requestFailed'))
             // A response can be lost after the runner accepted an update.
@@ -90,28 +87,18 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
         onSettled: () => { operationRef.current = false },
     })
 
-    const tools = query.data?.tools ?? []
+    const codex = getCodexStatus(query.data)
     useEffect(() => {
-        for (const tool of tools) {
-            const versionKey = `${machine.id}:${tool.id}:${tool.installedVersion}`
-            if (tool.state !== 'updated' || refreshedVersions.current.has(versionKey)) continue
-            refreshedVersions.current.add(versionKey)
-            // New sessions must fetch the catalog from the newly selected CLI.
-            // Existing sessions keep their own version and session-scoped catalog.
-            void queryClient.invalidateQueries({ queryKey: queryKeys.machineAgentAvailability(machine.id) })
-            const modelKeys: Partial<Record<AgentToolId, readonly (readonly string[])[]>> = {
-                codex: [queryKeys.machineCodexModels(machine.id)],
-                claude: [queryKeys.machineClaudeModels(machine.id)],
-                pi: [queryKeys.machinePiModels(machine.id)],
-                opencode: [['machine-opencode-models', machine.id], queryKeys.machineOpencodeModelVariants(machine.id)],
-                copilot: [['machine-copilot-models', machine.id]],
-                grok: [['machine-grok-models', machine.id]],
-            }
-            for (const key of modelKeys[tool.id] ?? []) void queryClient.invalidateQueries({ queryKey: key })
-        }
-    }, [tools, machine.id, queryClient])
-    const updatable = tools.filter((tool) => tool.canUpdate && !isUpdating(tool))
-    const updating = tools.some(isUpdating)
+        if (!supported || codex?.state !== 'updated') return
+        const versionKey = `${machine.id}:${codex.installedVersion}`
+        if (refreshedVersions.current.has(versionKey)) return
+        refreshedVersions.current.add(versionKey)
+        // New sessions fetch the updated machine catalog. Current sessions keep their scoped catalog.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.machineAgentAvailability(machine.id) })
+        void queryClient.invalidateQueries({ queryKey: queryKeys.machineCodexModels(machine.id) })
+    }, [codex, machine.id, queryClient, supported])
+    const updating = isUpdating(codex)
+    const visibleCodex = codex && isVisibleTool(codex) ? codex : null
     const operating = refreshMutation.isPending || updateMutation.isPending
     const disabled = !enabled || operating || query.isFetching
 
@@ -122,11 +109,11 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
         refreshMutation.mutate()
     }
 
-    function updateTools(ids: AgentToolId[]) {
-        if (operationRef.current || disabled || ids.length === 0) return
+    function updateCodex() {
+        if (operationRef.current || disabled || !codex?.canUpdate || updating) return
         operationRef.current = true
         setError(null)
-        updateMutation.mutate(ids)
+        updateMutation.mutate()
     }
 
     function toolMessage(tool: AgentToolStatus): string | null {
@@ -142,6 +129,8 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
         return null
     }
 
+    const message = visibleCodex ? toolMessage(visibleCodex) : null
+
     return (
         <div className="mt-2 space-y-2 text-xs">
             <div className="text-[var(--app-hint)]">
@@ -155,54 +144,43 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
                 <>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="font-medium text-[var(--app-fg)]">{t('settings.machines.tools.title')}</span>
-                        <div className="flex gap-3">
-                            <button type="button" onClick={checkUpdates} disabled={disabled || updating}
-                                className="text-[var(--app-link)] disabled:opacity-50">
-                                {query.isFetching || refreshMutation.isPending
-                                    ? t('settings.machines.tools.checking')
-                                    : t('settings.machines.tools.check')}
-                            </button>
-                            {updatable.length > 1 ? (
-                                <button type="button" onClick={() => updateTools(updatable.map((tool) => tool.id))}
-                                    disabled={disabled || updating} className="font-medium text-[var(--app-link)] disabled:opacity-50">
-                                    {t('settings.machines.tools.updateAll')}
-                                </button>
-                            ) : null}
-                        </div>
+                        <button type="button" onClick={checkUpdates} disabled={disabled || updating}
+                            className="text-[var(--app-link)] disabled:opacity-50">
+                            {query.isFetching || refreshMutation.isPending
+                                ? t('settings.machines.tools.checking')
+                                : t('settings.machines.tools.check')}
+                        </button>
                     </div>
                     <p className="text-[var(--app-hint)]">{t('settings.machines.tools.continuity')}</p>
                     {!machine.active || !isOnline ? (
                         <p role="status" className="text-[var(--app-hint)]">{t('settings.machines.tools.offline')}</p>
                     ) : null}
-                    {tools.filter(isVisibleTool).map((tool) => {
-                        const message = toolMessage(tool)
-                        return (
-                            <div key={tool.id} className="flex items-start justify-between gap-3 rounded-lg bg-[var(--app-bg)] px-2 py-2">
-                                <div className="min-w-0">
-                                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                                        <span className="font-medium text-[var(--app-fg)]">{tool.name}</span>
-                                        <span className="text-[var(--app-hint)]">{tool.installedVersion ?? '—'}</span>
-                                        {tool.latestVersion && tool.latestVersion !== tool.installedVersion ? (
-                                            <span className="text-[var(--app-link)]">{t('settings.machines.tools.available', { version: tool.latestVersion })}</span>
-                                        ) : null}
-                                    </div>
-                                    {message ? (
-                                        <p role="status" className={`mt-1 ${tool.state === 'failed' ? 'text-red-600 dark:text-red-400' : 'text-[var(--app-hint)]'}`}>
-                                            {message}
-                                        </p>
+                    {visibleCodex ? (
+                        <div className="flex items-start justify-between gap-3 rounded-lg bg-[var(--app-bg)] px-2 py-2">
+                            <div className="min-w-0">
+                                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                                    <span className="font-medium text-[var(--app-fg)]">{visibleCodex.name}</span>
+                                    <span className="text-[var(--app-hint)]">{visibleCodex.installedVersion ?? '—'}</span>
+                                    {visibleCodex.latestVersion && visibleCodex.latestVersion !== visibleCodex.installedVersion ? (
+                                        <span className="text-[var(--app-link)]">{t('settings.machines.tools.available', { version: visibleCodex.latestVersion })}</span>
                                     ) : null}
                                 </div>
-                                {tool.canUpdate && !isUpdating(tool) ? (
-                                    <button type="button" onClick={() => updateTools([tool.id])} disabled={disabled}
-                                        aria-label={t('settings.machines.tools.updateNamed', { name: tool.name })}
-                                        className="shrink-0 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-link)] disabled:opacity-50">
-                                        {t('settings.machines.tools.update')}
-                                    </button>
+                                {message ? (
+                                    <p role="status" className={`mt-1 ${visibleCodex.state === 'failed' ? 'text-red-600 dark:text-red-400' : 'text-[var(--app-hint)]'}`}>
+                                        {message}
+                                    </p>
                                 ) : null}
                             </div>
-                        )
-                    })}
-                    {query.data && !tools.some(isVisibleTool) ? (
+                            {visibleCodex.canUpdate && !updating ? (
+                                <button type="button" onClick={updateCodex} disabled={disabled}
+                                    aria-label={t('settings.machines.tools.updateNamed', { name: visibleCodex.name })}
+                                    className="shrink-0 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-link)] disabled:opacity-50">
+                                    {t('settings.machines.tools.update')}
+                                </button>
+                            ) : null}
+                        </div>
+                    ) : null}
+                    {query.data && !visibleCodex ? (
                         <p className="text-[var(--app-hint)]">{t('settings.machines.tools.empty')}</p>
                     ) : null}
                     {error || query.isError ? (

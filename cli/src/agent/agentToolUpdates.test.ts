@@ -70,6 +70,39 @@ describe('AgentToolUpdateService', () => {
         expect(result.tools.find((tool) => tool.id === 'pi')).toMatchObject({ installedVersion: null, canUpdate: false, reason: 'not_installed' })
     })
 
+    it('only checks and updates Codex when other Agent CLIs are installed', async () => {
+        const f = await fixture({ toolIds: ['codex'] })
+        const resolveCommand = vi.fn((tool: AgentToolId) => tool === 'codex' ? f.initial : join(f.home, tool))
+        const probeVersion = vi.fn(f.serviceOptions.probeVersion)
+        const service = new AgentToolUpdateService({ ...f.serviceOptions, resolveCommand, probeVersion })
+        const otherToolDirectory = getManagedAgentDirectory('pi', f.env)
+        await mkdir(otherToolDirectory, { recursive: true })
+        await writeFile(join(otherToolDirectory, 'update.json'), JSON.stringify({ version: '2.0.0', state: 'installing' }))
+        vi.mocked(readFile).mockClear()
+
+        await expect(service.update('pi')).rejects.toThrow('Agent tool updates are unavailable for pi')
+        expect(resolveCommand).not.toHaveBeenCalled()
+        expect(probeVersion).not.toHaveBeenCalled()
+        expect(f.fetchLatest).not.toHaveBeenCalled()
+        expect(f.install).not.toHaveBeenCalled()
+        expect(readFile).not.toHaveBeenCalled()
+
+        expect((await service.getStatus()).tools.map((tool) => tool.id)).toEqual(['codex'])
+        expect(codex(await service.getStatus(true))).toMatchObject({ installedVersion: '1.0.0', latestVersion: '2.0.0', canUpdate: true })
+        await service.update('codex')
+        expect(codex(await complete(service))).toMatchObject({ state: 'updated', installedVersion: '2.0.0' })
+
+        expect(new Set(resolveCommand.mock.calls.map(([tool]) => tool))).toEqual(new Set(['codex']))
+        const probedCommands = probeVersion.mock.calls.map(([command]) => command)
+        const codexDirectory = getManagedAgentDirectory('codex', f.env)
+        expect(probedCommands).toContain(f.initial)
+        expect(probedCommands).toEqual(expect.arrayContaining([expect.stringContaining(codexDirectory)]))
+        expect(probedCommands.every((command) => command === f.initial || command.startsWith(codexDirectory))).toBe(true)
+        expect(f.fetchLatest.mock.calls).toEqual([['@openai/codex']])
+        expect(f.install.mock.calls.map(([packageName]) => packageName)).toEqual(['@openai/codex'])
+        expect(vi.mocked(readFile).mock.calls.some(([path]) => String(path).startsWith(otherToolDirectory))).toBe(false)
+    })
+
     it('publishes a validated side installation and preserves the old executable', async () => {
         const f = await fixture()
         expect(codex(await f.service.update('codex')).state).toBe('installing')

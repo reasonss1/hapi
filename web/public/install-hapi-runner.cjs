@@ -11,7 +11,7 @@ const { setTimeout: delay } = require('node:timers/promises')
 const npmRegistry = 'https://registry.npmjs.org'
 const lockStaleMs = 30_000
 const customBuildPath = '/api/runner-builds/linux-x64'
-const updateCapability = 'agent-tool-updates'
+const updateCapability = 'codex-agent-tool-updates'
 
 function hubOrigin(value) {
     const url = new URL(value)

@@ -32,6 +32,8 @@ export const MACHINE_CAPABILITIES = {
     ForkArchivedCodex: 'fork-archived-codex',
     AgentAvailability: RPC_METHODS.AgentAvailability,
     AgentToolUpdates: 'agent-tool-updates',
+    /** Agent tool status and refresh are limited to Codex. */
+    CodexAgentToolUpdates: 'codex-agent-tool-updates',
     AgentQuotas: RPC_METHODS.AgentQuotas,
     CursorChatStoreStatus: RPC_METHODS.CursorChatStoreStatus,
     StopRunner: RPC_METHODS.StopRunner,
@@ -51,6 +53,7 @@ export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
     MACHINE_CAPABILITIES.ForkArchivedCodex,
     MACHINE_CAPABILITIES.AgentAvailability,
     MACHINE_CAPABILITIES.AgentToolUpdates,
+    MACHINE_CAPABILITIES.CodexAgentToolUpdates,
     MACHINE_CAPABILITIES.AgentQuotas,
     MACHINE_CAPABILITIES.CursorChatStoreStatus,
     MACHINE_CAPABILITIES.StopRunner,

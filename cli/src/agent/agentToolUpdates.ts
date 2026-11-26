@@ -113,6 +113,7 @@ function runFile(command: string, args: readonly string[], env: NodeJS.ProcessEn
 }
 
 type UpdateOptions = {
+    toolIds?: readonly AgentToolId[]
     env?: NodeJS.ProcessEnv
     platform?: NodeJS.Platform
     now?: () => number
@@ -157,7 +158,7 @@ export class AgentToolUpdateService {
         this.env = options.env ? { ...options.env } : { ...process.env }
         this.platform = options.platform ?? process.platform
         this.now = options.now ?? Date.now
-        for (const id of AgentToolIdSchema.options) {
+        for (const id of options.toolIds ?? AgentToolIdSchema.options) {
             this.tools.set(id, {
                 id, name: TOOLS[id].name, installedVersion: null, latestVersion: null,
                 canUpdate: false, state: 'idle', reason: 'not_installed',
@@ -255,9 +256,8 @@ export class AgentToolUpdateService {
     }
 
     private async refreshExternalStates(): Promise<void> {
-        await Promise.all(AgentToolIdSchema.options.map(async (id) => {
+        await Promise.all([...this.tools].map(async ([id, tool]) => {
             if (this.running.has(id)) return
-            const tool = this.tools.get(id)!
             if (this.configuredCommand(id)) return
             const generation = this.operationGenerations.get(id) ?? 0
             const canApply = () => !this.running.has(id) && (this.operationGenerations.get(id) ?? 0) === generation
@@ -320,8 +320,7 @@ export class AgentToolUpdateService {
 
     private async refresh(checkLatest: boolean): Promise<void> {
         const npm = resolveExecutable('npm', { platform: this.platform, pathValue: this.env.PATH, pathExt: this.env.PATHEXT })
-        await Promise.all(AgentToolIdSchema.options.map(async (id) => {
-            const tool = this.tools.get(id)!
+        await Promise.all([...this.tools].map(async ([id, tool]) => {
             if (this.running.has(id)) return
             let installedVersion: string | null = null
             let probeFailed = false
@@ -366,10 +365,11 @@ export class AgentToolUpdateService {
 
     async update(toolId: AgentToolId): Promise<AgentToolsResponse> {
         const id = AgentToolIdSchema.parse(toolId)
+        const tool = this.tools.get(id)
+        if (!tool) throw new Error('Agent tool updates are unavailable for ' + id)
         if (this.running.has(id)) return this.snapshot()
         await this.getStatus(this.checkedAt === null)
         if (this.running.has(id)) return this.snapshot()
-        const tool = this.tools.get(id)!
         if (!tool.canUpdate || !tool.latestVersion) return this.snapshot()
         this.operationGenerations.set(id, (this.operationGenerations.get(id) ?? 0) + 1)
         tool.state = 'installing'

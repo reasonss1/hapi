@@ -117,16 +117,18 @@ export function createMachinesRoutes(
             const machine = requireMachine(c, engine, machineId)
             if (machine instanceof Response) return machine
             if (!machine.active) return c.json({ error: 'Machine offline', code: 'machine_offline' }, 503)
-            if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentToolUpdates)) {
-                return c.json({ error: 'Upgrade this device runner to manage agent versions', code: 'runner_upgrade_required' }, 409)
+            if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.CodexAgentToolUpdates)) {
+                return c.json({ error: 'Upgrade this device runner to manage Codex versions', code: 'runner_upgrade_required' }, 409)
             }
             try {
                 if (method === 'get') {
-                    return c.json(await engine.getAgentTools(machineId, c.req.query('refresh') === 'true'))
+                    const response = await engine.getAgentTools(machineId, c.req.query('refresh') === 'true')
+                    return c.json({ ...response, tools: response.tools.filter(({ id }) => id === 'codex') })
                 }
                 const parsed = UpdateAgentToolRequestSchema.safeParse(await c.req.json().catch(() => null))
-                if (!parsed.success) return c.json({ error: 'Invalid tool' }, 400)
-                return c.json(await engine.updateAgentTool(machineId, parsed.data.tool))
+                if (!parsed.success || parsed.data.tool !== 'codex') return c.json({ error: 'Only Codex updates are supported' }, 400)
+                const response = await engine.updateAgentTool(machineId, parsed.data.tool)
+                return c.json({ ...response, tools: response.tools.filter(({ id }) => id === 'codex') })
             } catch (error) {
                 if (error instanceof RpcTargetMissingError) {
                     return c.json({ error: 'Machine unavailable', code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
