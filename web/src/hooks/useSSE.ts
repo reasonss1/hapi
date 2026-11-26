@@ -12,6 +12,7 @@ import {
     toSessionSummaryMetadata
 } from '@hapi/protocol'
 import { MachinePatchSchema, MachineSchema, SessionPatchSchema, SessionSchema } from '@hapi/protocol/schemas'
+import { extractAssistantPlainText, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type {
     Machine,
     MachinesResponse,
@@ -23,6 +24,7 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import type { TodoDetailResponse } from '@/types/todo'
 import { forgetMachineLabel } from '@/hooks/useMachineLabels'
 import { forgetSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
@@ -284,7 +286,8 @@ export function useSSE(options: {
         machines: boolean
         sessionIds: Set<string>
         scratchlistSessionIds: Set<string>
-    }>({ sessions: false, machines: false, sessionIds: new Set(), scratchlistSessionIds: new Set() })
+        todoSessionIds: Set<string>
+    }>({ sessions: false, machines: false, sessionIds: new Set(), scratchlistSessionIds: new Set(), todoSessionIds: new Set() })
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const reconnectAttemptRef = useRef(0)
     // Set when a reconnect was due while the tab was hidden. Hidden tabs do
@@ -339,6 +342,7 @@ export function useSSE(options: {
             pendingInvalidationsRef.current.machines = false
             pendingInvalidationsRef.current.sessionIds.clear()
             pendingInvalidationsRef.current.scratchlistSessionIds.clear()
+            pendingInvalidationsRef.current.todoSessionIds.clear()
             if (reconnectTimerRef.current) {
                 clearTimeout(reconnectTimerRef.current)
                 reconnectTimerRef.current = null
@@ -425,6 +429,7 @@ export function useSSE(options: {
                 && !pending.machines
                 && pending.sessionIds.size === 0
                 && pending.scratchlistSessionIds.size === 0
+                && pending.todoSessionIds.size === 0
             ) {
                 return
             }
@@ -433,11 +438,13 @@ export function useSSE(options: {
             const shouldInvalidateMachines = pending.machines
             const sessionIds = Array.from(pending.sessionIds)
             const scratchlistSessionIds = Array.from(pending.scratchlistSessionIds)
+            const todoSessionIds = new Set(pending.todoSessionIds)
 
             pending.sessions = false
             pending.machines = false
             pending.sessionIds.clear()
             pending.scratchlistSessionIds.clear()
+            pending.todoSessionIds.clear()
 
             const tasks: Array<Promise<unknown>> = []
             if (shouldInvalidateSessions) {
@@ -448,6 +455,14 @@ export function useSSE(options: {
             }
             for (const sessionId of scratchlistSessionIds) {
                 tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.scratchlist(sessionId) }))
+            }
+            if (todoSessionIds.size) {
+                for (const [queryKey, detail] of queryClient.getQueriesData<TodoDetailResponse>({ queryKey: queryKeys.todoDetails })) {
+                    const sessionId = detail?.task.assignment?.sessionId
+                    if (sessionId && todoSessionIds.has(sessionId)) {
+                        tasks.push(queryClient.invalidateQueries({ queryKey, exact: true }))
+                    }
+                }
             }
             if (shouldInvalidateMachines) {
                 tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.machines }))
@@ -715,6 +730,16 @@ export function useSSE(options: {
                 queueSessionListInvalidation()
             }
 
+            if (scope === 'global' && event.type === 'message-received'
+                && queryClient.getQueryCache().find({ queryKey: queryKeys.todoDetails, exact: false })) {
+                const envelope = unwrapRoleWrappedRecordEnvelope(event.message.content)
+                if ((envelope?.role === 'agent' || envelope?.role === 'assistant')
+                    && extractAssistantPlainText(envelope.content)?.trim()) {
+                    pendingInvalidationsRef.current.todoSessionIds.add(event.sessionId)
+                    scheduleInvalidationFlush()
+                }
+            }
+
             if (scope === 'global' && MESSAGE_STREAM_EVENT_TYPES.has(event.type)) {
                 if (event.type === 'message-received' && event.message.scheduledAt != null) {
                     queueSessionListInvalidation()
@@ -971,6 +996,7 @@ export function useSSE(options: {
             pendingInvalidationsRef.current.sessions = false
             pendingInvalidationsRef.current.machines = false
             pendingInvalidationsRef.current.sessionIds.clear()
+            pendingInvalidationsRef.current.todoSessionIds.clear()
             if (reconnectTimerRef.current) {
                 clearTimeout(reconnectTimerRef.current)
                 reconnectTimerRef.current = null

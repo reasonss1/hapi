@@ -83,6 +83,7 @@ import SettingsAboutPage from '@/routes/settings/about'
 import SettingsStoragePage from '@/routes/settings/storage'
 import SettingsUsagePage from '@/routes/settings/usage'
 import SharePage from '@/routes/share'
+import TodoPage, { TodoIcon, parseTodoSearch, type TodoSearch } from '@/routes/todo'
 import { retargetSharePendingTransfer, setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer, parseShareSearch } from '@/lib/shareTransfer'
 
@@ -324,10 +325,21 @@ function SessionsPage() {
                         onBrowse={canBrowse ? () => navigate({ to: '/browse' }) : undefined}
                         onRefresh={handleRefresh}
                         isLoading={isLoading}
-                        // Keep ranks: new 4, sort and filter 5, settings 6,
+                        // Keep ranks: Todo 3, new 4, sort and filter 5, settings 6,
                         // mark-all 7, browse 8. Higher sheds into More first (#2039).
                         renderHeader
                         toolbarExtras={[
+                            {
+                                id: 'todo',
+                                keep: 3,
+                                node: (
+                                    <button type="button" onClick={() => navigate({ to: '/todos', search: {} })}
+                                        className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+                                        title={t('todo.title')} aria-label={t('todo.title')}>
+                                        <TodoIcon />
+                                    </button>
+                                ),
+                            },
                             ...(canBrowse ? [{
                                 id: 'browse',
                                 keep: 8,
@@ -1109,23 +1121,31 @@ function NewSessionPage() {
     const queryClient = useQueryClient()
     const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
     const { t } = useTranslation()
-    const { directory: initialDirectory, machineId: initialMachineId, shareTransferId } = newSessionRoute.useSearch()
+    const { directory: initialDirectory, machineId: initialMachineId, shareTransferId, todoReturn } = newSessionRoute.useSearch()
 
     const handleCancel = useCallback(() => {
         if (shareTransferId) {
             void deleteShareTransfer(shareTransferId)
         }
+        if (todoReturn) {
+            navigate({ to: '/todos', search: todoReturn, replace: true })
+            return
+        }
         navigate({
             to: '/sessions',
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
-    }, [navigate, shareTransferId])
+    }, [navigate, shareTransferId, todoReturn])
 
     const handleSuccess = useCallback((sessionId: string) => {
         if (shareTransferId) {
             setSharePendingTransfer(shareTransferId, sessionId)
         }
         void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+        if (todoReturn) {
+            navigate({ to: '/todos', search: { ...todoReturn, session: sessionId }, replace: true })
+            return
+        }
         // Replace current page with /sessions to clear spawn flow from history
         navigate({
             to: '/sessions',
@@ -1140,7 +1160,7 @@ function NewSessionPage() {
                 ...PRESERVE_SESSION_SIDEBAR_SCROLL,
             })
         })
-    }, [navigate, queryClient, shareTransferId])
+    }, [navigate, queryClient, shareTransferId, todoReturn])
 
     const handleChooseFolder = useCallback((args: { machineId: string | null; directory: string }) => {
         // Forward the currently-selected machine so /browse opens scoped to
@@ -1148,11 +1168,12 @@ function NewSessionPage() {
         // disagree if the user changed machines without yet creating a
         // session. Preserve shareTransferId so a share-target spawn that
         // detours through /browse still seeds the composer after success.
-        const search: { machineId?: string; shareTransferId?: string } = {}
+        const search: { machineId?: string; shareTransferId?: string; todoReturn?: TodoSearch } = {}
         if (args.machineId) search.machineId = args.machineId
         if (shareTransferId) search.shareTransferId = shareTransferId
+        if (todoReturn) search.todoReturn = todoReturn
         navigate({ to: '/browse', search })
-    }, [navigate, shareTransferId])
+    }, [navigate, shareTransferId, todoReturn])
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -1188,6 +1209,7 @@ function NewSessionPage() {
                     onChooseFolder={handleChooseFolder}
                     initialDirectory={initialDirectory}
                     initialMachineId={initialMachineId}
+                    initialAgent={todoReturn ? 'codex' : undefined}
                 />
             </div>
         </div>
@@ -1200,16 +1222,14 @@ function BrowsePage() {
     const goBack = useAppGoBack()
     const { machines, isLoading: machinesLoading } = useMachines(api, true)
     const { t } = useTranslation()
-    const { machineId: initialMachineId, shareTransferId } = browseRoute.useSearch()
+    const { machineId: initialMachineId, shareTransferId, todoReturn } = browseRoute.useSearch()
 
     const handleStartSession = useCallback((machineId: string, directory: string) => {
         navigate({
             to: '/sessions/new',
-            search: shareTransferId
-                ? { directory, machineId, shareTransferId }
-                : { directory, machineId }
+            search: { directory, machineId, shareTransferId, todoReturn }
         })
-    }, [navigate, shareTransferId])
+    }, [navigate, shareTransferId, todoReturn])
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -1361,6 +1381,7 @@ type NewSessionSearch = {
     directory?: string
     machineId?: string
     shareTransferId?: string
+    todoReturn?: TodoSearch
 }
 
 const newSessionRoute = createRoute({
@@ -1377,6 +1398,10 @@ const newSessionRoute = createRoute({
         if (typeof search.shareTransferId === 'string' && search.shareTransferId) {
             result.shareTransferId = search.shareTransferId
         }
+        if (typeof search.todoReturn === 'object' && search.todoReturn !== null) {
+            const next = parseTodoSearch(search.todoReturn as Record<string, unknown>)
+            if (next.list && next.task) result.todoReturn = next
+        }
         return result
     },
     component: NewSessionPage,
@@ -1385,17 +1410,28 @@ const newSessionRoute = createRoute({
 const browseRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/browse',
-    validateSearch: (search: Record<string, unknown>): { machineId?: string; shareTransferId?: string } => {
-        const result: { machineId?: string; shareTransferId?: string } = {}
+    validateSearch: (search: Record<string, unknown>): { machineId?: string; shareTransferId?: string; todoReturn?: TodoSearch } => {
+        const result: { machineId?: string; shareTransferId?: string; todoReturn?: TodoSearch } = {}
         if (typeof search.machineId === 'string' && search.machineId) {
             result.machineId = search.machineId
         }
         if (typeof search.shareTransferId === 'string' && search.shareTransferId) {
             result.shareTransferId = search.shareTransferId
         }
+        if (typeof search.todoReturn === 'object' && search.todoReturn !== null) {
+            const next = parseTodoSearch(search.todoReturn as Record<string, unknown>)
+            if (next.list && next.task) result.todoReturn = next
+        }
         return result
     },
     component: BrowsePage,
+})
+
+const todoRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/todos',
+    validateSearch: parseTodoSearch,
+    component: () => <TodoPage search={todoRoute.useSearch()} />,
 })
 
 const settingsRoute = createRoute({
@@ -1500,6 +1536,7 @@ export const routeTree = rootRoute.addChildren([
         ]),
     ]),
     browseRoute,
+    todoRoute,
     settingsRoute.addChildren([
         settingsIndexRoute,
         settingsGeneralRoute,

@@ -50,4 +50,10 @@ export const queryKeys = {
     skills: (sessionId: string) => ['skills', sessionId] as const,
     scratchlist: (sessionId: string) => ['scratchlist', sessionId] as const,
     features: ['features'] as const,
+    todoStatus: ['todo', 'status'] as const,
+    todoLists: ['todo', 'lists'] as const,
+    todoAssignments: ['todo', 'assignments'] as const,
+    todoTasks: (listId: string) => ['todo', 'tasks', listId] as const,
+    todoDetails: ['todo', 'task'] as const,
+    todoTask: (listId: string, taskId: string) => ['todo', 'task', listId, taskId] as const,
 }

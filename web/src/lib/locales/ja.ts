@@ -1,4 +1,9 @@
 export default {
+  'todo.phase.released': '割り当て解除済み',
+  'todo.release': '割り当てを解除',
+  'todo.releaseDescription': '「{title}」と元のセッションの関連付けを解除しますか？セッションですでに始まった作業は続く場合があります。',
+  'todo.releaseFailed': '割り当てを解除できませんでした。もう一度お試しください。',
+  'todo.retryDelivery': '送信を再試行',
   // 読み込み状態
   'loading': '読み込み中…',
   'authorizing': '認証中…',

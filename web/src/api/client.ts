@@ -82,6 +82,7 @@ import type {
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import type { AgentToolId, AgentToolsResponse } from '@hapi/protocol/agentTools'
+import type { LinkedTodoAssignment, TodoAssignment, TodoDelivery, TodoDetailResponse, TodoList, TodoTask, TodoTasksResponse } from '@/types/todo'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
 import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
@@ -1176,6 +1177,55 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify(request)
         })
+    }
+
+    async getTodoStatus(signal?: AbortSignal): Promise<{ available: boolean }> {
+        return await this.request('/api/todo/status', { signal })
+    }
+
+    async getTodoLists(signal?: AbortSignal): Promise<{ lists: TodoList[] }> {
+        return await this.request('/api/todo/lists', { signal })
+    }
+
+    async getTodoAssignments(signal?: AbortSignal): Promise<{ assignments: LinkedTodoAssignment[] }> {
+        return await this.request('/api/todo/assignments', { signal })
+    }
+
+    async getTodoTasks(listId: string, cursor?: string, signal?: AbortSignal): Promise<TodoTasksResponse> {
+        const query = cursor ? `?${new URLSearchParams({ cursor })}` : ''
+        return await this.request(`/api/todo/lists/${encodeURIComponent(listId)}/tasks${query}`, { signal })
+    }
+
+    async getTodoTask(listId: string, taskId: string, signal?: AbortSignal): Promise<TodoDetailResponse> {
+        return await this.request(this.todoTaskPath(listId, taskId), { signal })
+    }
+
+    async assignTodoTask(listId: string, taskId: string, body: TodoDelivery & { sessionId: string }): Promise<{ assignment: TodoAssignment }> {
+        return await this.request(`${this.todoTaskPath(listId, taskId)}/assign`, { method: 'POST', body: JSON.stringify(body) })
+    }
+
+    async continueTodoTask(listId: string, taskId: string, body: TodoDelivery): Promise<{ assignment: TodoAssignment }> {
+        return await this.request(`${this.todoTaskPath(listId, taskId)}/continue`, { method: 'POST', body: JSON.stringify(body) })
+    }
+
+    async selectTodoResult(listId: string, taskId: string, messageId: string): Promise<{ assignment: TodoAssignment }> {
+        return await this.request(`${this.todoTaskPath(listId, taskId)}/result`, { method: 'POST', body: JSON.stringify({ messageId }) })
+    }
+
+    async completeTodoTask(listId: string, taskId: string): Promise<{ task: TodoTask }> {
+        return await this.request(`${this.todoTaskPath(listId, taskId)}/complete`, { method: 'POST', body: '{}' })
+    }
+
+    async releaseTodoAssignment(listId: string, taskId: string): Promise<{ assignment: TodoAssignment }> {
+        return await this.request(`${this.todoTaskPath(listId, taskId)}/release`, { method: 'POST', body: '{}' })
+    }
+
+    async retryTodoAssignment(listId: string, taskId: string): Promise<{ assignment: TodoAssignment }> {
+        return await this.request(`${this.todoTaskPath(listId, taskId)}/retry`, { method: 'POST', body: '{}' })
+    }
+
+    private todoTaskPath(listId: string, taskId: string): string {
+        return `/api/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`
     }
 
     async getMachines(options?: { includeOffline?: boolean }): Promise<MachinesResponse> {

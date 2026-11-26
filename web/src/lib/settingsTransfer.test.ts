@@ -28,6 +28,7 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi:newSession:agent',
     'hapi:newSession:yolo',
     'hapi:newSession:launchSettings:v1',
+    'hapi:todo:lastSession',
     'hapi-share-transfers',
     'hapi:composer-drafts',
     'hapi:ask-user-question-drafts',

@@ -60,6 +60,7 @@ class FakeEventSource {
 
 function renderUseSSE(options?: {
     onDisconnect?: (reason: string) => void
+    scope?: 'global' | 'full'
 }) {
     const queryClient = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
@@ -69,11 +70,51 @@ function renderUseSSE(options?: {
         token: 'test-token',
         baseUrl: 'http://hub.test',
         subscription: { all: true },
+        scope: options?.scope,
         onEvent: () => {},
         onDisconnect: options?.onDisconnect
     }), { wrapper })
     return { ...hook, queryClient }
 }
+
+describe('useSSE Todo reply updates', () => {
+    beforeEach(() => {
+        FakeEventSource.instances = []
+        vi.useFakeTimers()
+        vi.stubGlobal('EventSource', FakeEventSource)
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    })
+
+    it('invalidates only Todo details bound to the session receiving an assistant reply', () => {
+        const { queryClient, unmount } = renderUseSSE({ scope: 'global' })
+        const taskKey = queryKeys.todoTask('list', 'task')
+        const otherKey = queryKeys.todoTask('list', 'other')
+        queryClient.setQueryData(taskKey, { task: { assignment: { sessionId: 'session' } } })
+        queryClient.setQueryData(otherKey, { task: { assignment: { sessionId: 'another-session' } } })
+
+        function send(role: string) {
+            FakeEventSource.instances[0]?.simulateMessage({
+                type: 'message-received', sessionId: 'session',
+                message: {
+                    id: 'message', seq: 1, localId: null, createdAt: 1,
+                    content: { role, content: { type: 'codex', data: { type: 'message', message: 'Work complete.' } } },
+                },
+            })
+            vi.advanceTimersByTime(50)
+        }
+
+        act(() => send('user'))
+        expect(queryClient.getQueryState(taskKey)?.isInvalidated).toBe(false)
+        act(() => send('agent'))
+        expect(queryClient.getQueryState(taskKey)?.isInvalidated).toBe(true)
+        expect(queryClient.getQueryState(otherKey)?.isInvalidated).toBe(false)
+        unmount()
+    })
+})
 
 describe('useSSE machine management updates', () => {
     beforeEach(() => {

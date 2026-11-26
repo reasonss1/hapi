@@ -12,6 +12,7 @@ import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
 import { SessionJobsStore } from './sessionJobsStore'
+import { TodoAssignmentStore } from './todoAssignments'
 import { SessionRedirectStore } from './sessionRedirectStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
@@ -97,6 +98,7 @@ export class Store {
     readonly fcm: FcmStore
     readonly scratchlist: ScratchlistStore
     readonly sessionJobs: SessionJobsStore
+    readonly todoAssignments: TodoAssignmentStore
     readonly sessionRedirects: SessionRedirectStore
     readonly usage: UsageStore
     readonly turns: TurnStore
@@ -155,6 +157,7 @@ export class Store {
         this.fcm = new FcmStore(this.db)
         this.scratchlist = new ScratchlistStore(this.db)
         this.sessionJobs = new SessionJobsStore(this.db)
+        this.todoAssignments = new TodoAssignmentStore(this.db)
         this.sessionRedirects = new SessionRedirectStore(this.db)
         this.usage = new UsageStore(this.db)
         this.turns = new TurnStore(this.db)

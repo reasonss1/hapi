@@ -29,6 +29,8 @@ import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
 import { createPluginRoutes } from './routes/plugins'
+import { createTodoRoutes } from './routes/todo'
+import { TodoMcp } from './todoMcp'
 import { createMachinesRoutes } from './routes/machines'
 import { createRunnerEnrollmentRoutes } from './routes/runnerEnrollment'
 import { createRunnerBuildRoutes, resolveRunnerBuildPath } from './routes/runnerBuilds'
@@ -395,6 +397,11 @@ export function createWebApp(options: {
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createPluginRoutes(options.getSyncEngine))
+    const todoCommand = process.env.HAPI_TODO_MCP_COMMAND?.trim()
+    const todoNamespace = process.env.HAPI_TODO_NAMESPACE?.trim()
+    app.route('/api/todo', createTodoRoutes(options.store, options.getSyncEngine, todoCommand && todoNamespace
+        ? { namespace: todoNamespace, connector: new TodoMcp(todoCommand) }
+        : null))
     app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))
     app.route('/api', createStorageRoutes(configuration.dbPath))
     app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine))

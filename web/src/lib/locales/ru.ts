@@ -1,4 +1,9 @@
 export default {
+  'todo.phase.released': 'Назначение снято',
+  'todo.release': 'Снять назначение',
+  'todo.releaseDescription': 'Отвязать задачу «{title}» от прежней сессии? Уже начатая в сессии работа может продолжиться.',
+  'todo.releaseFailed': 'Не удалось снять назначение. Попробуйте ещё раз.',
+  'todo.retryDelivery': 'Повторить отправку',
   // Состояния загрузки
   'loading': 'Загрузка…',
   'authorizing': 'Авторизация…',
