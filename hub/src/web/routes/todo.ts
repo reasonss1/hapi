@@ -1,8 +1,12 @@
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
-import { isObject } from '@hapi/protocol'
+import { randomUUID } from 'node:crypto'
+import { posix, win32 } from 'node:path'
+import { isObject, MACHINE_CAPABILITIES } from '@hapi/protocol'
 import { extractAssistantPlainText, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
+import { resolvePeerSpawnConfig } from '@hapi/protocol/peerSpawnDefaults'
 import { z } from 'zod'
+import { readPeerSpawnDefaults } from '../../config/peerSpawnDefaults'
 import type { Store } from '../../store'
 import type { TodoAssignmentRecord } from '../../store/todoAssignments'
 import type { SyncEngine } from '../../sync/syncEngine'
@@ -13,10 +17,18 @@ const delivery = z.object({
     requestId: z.string().uuid(),
     notes: z.string().trim().max(6000).optional(),
 })
-const assignBody = delivery.extend({ sessionId: z.string().min(1).max(128) }).strict()
+const assignBody = delivery.extend({
+    machineId: z.string().min(1).max(128),
+    path: z.string().trim().min(1).max(4096).refine((value) => !/[\u0000\r\n]/.test(value)).optional(),
+}).strict()
 const continueBody = delivery.extend({ notes: z.string().trim().min(1).max(6000) }).strict()
 const resultBody = z.object({ messageId: z.string().min(1).max(128) }).strict()
 const externalId = z.string().min(1).max(512).regex(/^[A-Za-z0-9_=+.-]+$/)
+
+type LaunchErrorCode = 'todo_device_unavailable' | 'todo_workspace_unavailable' | 'todo_spawn_failed'
+class TodoLaunchError extends Error {
+    constructor(readonly code: LaunchErrorCode) { super(code) }
+}
 
 type Phase = 'queued' | 'assigned' | 'running' | 'waiting' | 'ready' | 'offline' | 'indeterminate' | 'failed' | 'completed' | 'released'
 
@@ -73,6 +85,9 @@ function inspectAssignment(store: Store, engine: SyncEngine | null, assignment: 
     if (completedAt !== null) phase = 'completed'
     else if (releasedAt !== null) phase = 'released'
     else if (resultMessageId) phase = 'ready'
+    else if (assignment.spawnMachineId && delivery.status === 'absent' && !session?.active) {
+        phase = assignment.spawnDispatchedAt == null ? 'failed' : session?.metadata?.hostPid ? 'offline' : 'indeterminate'
+    }
     else if (!session?.active) phase = 'offline'
     else if (delivery.status === 'absent') phase = 'failed'
     else if (delivery.status === 'indeterminate' || delivery.status === 'dispatching') phase = 'indeterminate'
@@ -115,10 +130,12 @@ function messageFor(task: TodoSourceTask, notes?: string) {
 export function createTodoRoutes(store: Store, getEngine: () => SyncEngine | null, config: {
     namespace: string
     connector: Pick<TodoMcp, 'listLists' | 'listTasks' | 'getTask' | 'completeTask'>
+    dataDir?: string
 } | null) {
     const app = new Hono<WebAppEnv>()
     const assignments = store.todoAssignments
     const inFlight = new Map<string, Promise<void>>()
+    const launching = new Map<string, Promise<void>>()
     const completing = new Set<string>()
 
     async function deliver(engine: SyncEngine, assignment: TodoAssignmentRecord) {
@@ -142,13 +159,14 @@ export function createTodoRoutes(store: Store, getEngine: () => SyncEngine | nul
         return c.json({ available: config !== null && c.get('namespace') === config.namespace })
     })
     if (!config) return app
-    const { connector, namespace } = config
+    const { connector, namespace, dataDir } = config
     app.use('*', bodyLimit({ maxSize: 16_384 }), async (c, next) => {
         c.header('Cache-Control', 'no-store')
         if (c.get('namespace') !== namespace) return c.json({ error: 'Todo unavailable' }, 404)
         return await next()
     })
     app.onError((error, c) => {
+        if (error instanceof TodoLaunchError) return c.json({ error: error.code, code: error.code }, 409)
         if (error instanceof TodoMcpError) {
             return c.json({ error: error.code, code: error.code }, error.code === 'todo_missing' ? 404 : 503)
         }
@@ -202,6 +220,7 @@ export function createTodoRoutes(store: Store, getEngine: () => SyncEngine | nul
     function getAvailableSession(engine: SyncEngine, sessionId: string, ignoreLocalId?: string) {
         const session = engine.getSessionByNamespace(sessionId, namespace)
         if (!session?.active || session.metadata?.flavor !== 'codex' || session.thinking
+            || session.metadata.lifecycleState === 'archived' || session.metadata.supersededBySessionId
             || session.agentState?.controlledByUser === true
             || Object.keys(session.agentState?.requests ?? {}).length > 0) return null
         const queued = store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
@@ -209,31 +228,98 @@ export function createTodoRoutes(store: Store, getEngine: () => SyncEngine | nul
         return session
     }
 
+    function devicePath(engine: SyncEngine, machineId: string, requestedPath?: string): string {
+        const machine = engine.getMachineByNamespace(machineId, namespace)
+        if (!machine?.active || !machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentAvailability)) {
+            throw new TodoLaunchError('todo_device_unavailable')
+        }
+        const metadata = machine.metadata
+        const folder = requestedPath ?? metadata.workspaceRoots?.[0] ?? metadata.homeDir
+        const isAbsolute = metadata.platform === 'win32' ? win32.isAbsolute : posix.isAbsolute
+        if (!folder || !isAbsolute(folder) || /[\u0000\r\n]/.test(folder)) {
+            throw new TodoLaunchError('todo_workspace_unavailable')
+        }
+        return folder
+    }
+
+    async function launch(engine: SyncEngine, assignment: TodoAssignmentRecord) {
+        const current = assignments.byTask(namespace, assignment.listId, assignment.taskId)
+        if (current?.id !== assignment.id || current.releasedAt || current.completedAt || completing.has(current.id)) return
+        const { id, sessionId, localId, spawnMachineId, spawnPath } = current
+        if (!spawnMachineId || !spawnPath || store.messages.getLocalMessageStates(sessionId, [localId]).length) return
+        const existing = launching.get(id)
+        if (existing) return await existing
+
+        const work = (async () => {
+            const session = engine.getSessionByNamespace(sessionId, namespace)
+            if (session?.active) {
+                if (session.metadata?.machineId !== spawnMachineId || !getAvailableSession(engine, sessionId, localId)) {
+                    throw new TodoLaunchError('todo_spawn_failed')
+                }
+                await deliver(engine, current)
+                return
+            }
+            if (current.spawnDispatchedAt != null) return
+            const defaults = dataDir ? await readPeerSpawnDefaults(dataDir) : null
+            devicePath(engine, spawnMachineId, spawnPath)
+            const resolved = resolvePeerSpawnConfig({ agent: 'codex' }, defaults)
+            let claimed = false
+            const result = await engine.spawnSession(
+                spawnMachineId, spawnPath, 'codex', resolved.model, undefined, undefined, 'simple', undefined,
+                undefined, resolved.effort, resolved.permissionMode, undefined, undefined, undefined, undefined,
+                'remote', namespace, {
+                    sessionId,
+                    claim: () => {
+                        claimed = assignments.claimSpawn(current)
+                        return claimed
+                    },
+                },
+            )
+            if (result.type === 'success') {
+                await deliver(engine, current)
+            } else if (result.childStarted === false) {
+                if (claimed) assignments.resetSpawn(current)
+                throw new TodoLaunchError(result.code === 'outside_workspace_roots' ? 'todo_workspace_unavailable' : 'todo_spawn_failed')
+            }
+        })().finally(() => launching.delete(id))
+        launching.set(id, work)
+        await work
+    }
+
     app.post(`${taskRoute}/assign`, async (c) => {
         const { listId, taskId } = c.req.param()
         const parsed = assignBody.safeParse(await c.req.json().catch(() => null))
         if (!parsed.success) return c.json({ error: 'Invalid assignment' }, 400)
-        if (completing.has(JSON.stringify([listId, taskId]))) return c.json({ error: 'Completion in progress' }, 409)
         const engine = getEngine()
         if (!engine) return c.json({ error: 'Not connected' }, 503)
-        const { sessionId, requestId, notes } = parsed.data
+        if (completing.has(JSON.stringify([listId, taskId]))) return c.json({ error: 'Completion in progress' }, 409)
+        const { machineId, path, requestId, notes } = parsed.data
         const previous = assignments.byTask(namespace, listId, taskId)
-        if (previous?.requestId === requestId && previous.sessionId === sessionId) {
-            if (!previous.completedAt && !previous.releasedAt && getAvailableSession(engine, sessionId, previous.localId)) {
-                await deliver(engine, previous)
+        if (previous?.requestId === requestId) {
+            if (previous.spawnMachineId !== machineId || (path && previous.spawnPath !== path)) {
+                return c.json({ error: 'request_conflict', code: 'request_conflict' }, 409)
             }
-            return c.json({ assignment: inspectAssignment(store, engine, previous).view })
+            if (!previous.completedAt && !previous.releasedAt &&
+                !store.messages.getLocalMessageStates(previous.sessionId, [previous.localId]).length) {
+                const source = await connector.getTask(listId, taskId, { fresh: true })
+                if (source.status === 'completed') return c.json({ error: 'Task is complete' }, 409)
+                await launch(engine, previous)
+            }
+            return c.json({ assignment: inspectAssignment(store, engine, assignments.byTask(namespace, listId, taskId) ?? previous).view })
         }
-        if (!getAvailableSession(engine, sessionId)) return c.json({ error: 'Session not available', code: 'todo_session_unavailable' }, 409)
-        const task = await connector.getTask(listId, taskId)
+        const directory = devicePath(engine, machineId, path)
+        const task = await connector.getTask(listId, taskId, { fresh: true })
         if (task.status === 'completed' || completing.has(JSON.stringify([listId, taskId]))) {
             return c.json({ error: 'Task is complete or syncing' }, 409)
         }
-        if (!getAvailableSession(engine, sessionId)) return c.json({ error: 'Session not available', code: 'todo_session_unavailable' }, 409)
-        const reserved = assignments.reserve({ namespace, listId, taskId, sessionId, requestId, text: messageFor(task, notes) })
+        devicePath(engine, machineId, directory)
+        const reserved = assignments.reserve({
+            namespace, listId, taskId, sessionId: randomUUID(), requestId, text: messageFor(task, notes),
+            spawnMachineId: machineId, spawnPath: directory,
+        })
         if (reserved.status !== 'ok') return c.json({ error: reserved.status, code: reserved.status }, 409)
-        const assignment = reserved.assignment
-        if (!assignment.completedAt) await deliver(engine, assignment)
+        await launch(engine, reserved.assignment)
+        const assignment = assignments.byTask(namespace, listId, taskId) ?? reserved.assignment
         return c.json({ assignment: inspectAssignment(store, engine, assignment).view })
     })
 
@@ -270,7 +356,7 @@ export function createTodoRoutes(store: Store, getEngine: () => SyncEngine | nul
         if (!['assigned', 'ready'].includes(phase) || !getAvailableSession(engine, assignment.sessionId)) {
             return c.json({ error: 'Assignment is still running or unavailable' }, 409)
         }
-        const task = await connector.getTask(listId, taskId)
+        const task = await connector.getTask(listId, taskId, { fresh: true })
         if (task.status === 'completed' || completing.has(assignment.id) || !getAvailableSession(engine, assignment.sessionId)) {
             return c.json({ error: 'Task or session no longer available' }, 409)
         }
@@ -291,17 +377,21 @@ export function createTodoRoutes(store: Store, getEngine: () => SyncEngine | nul
         }
         const current = inspectAssignment(store, engine, assignment).view
         if (current.phase === 'failed') {
-            const source = await connector.getTask(listId, taskId)
+            const source = await connector.getTask(listId, taskId, { fresh: true })
             const latest = assignments.byTask(namespace, listId, taskId)
             if (source.status === 'completed' || latest?.id !== assignment.id || latest.releasedAt || latest.completedAt) {
                 return c.json({ error: 'Task or assignment changed' }, 409)
             }
-            if (!getAvailableSession(engine, assignment.sessionId)) return c.json({ error: 'Session not available' }, 409)
-            await deliver(engine, assignment)
+            if (latest.spawnMachineId) {
+                await launch(engine, latest)
+            } else {
+                if (!getAvailableSession(engine, latest.sessionId)) return c.json({ error: 'Session not available' }, 409)
+                await deliver(engine, latest)
+            }
         } else if (current.phase === 'offline' || current.phase === 'indeterminate') {
             return c.json({ error: 'Assignment cannot be retried' }, 409)
         }
-        return c.json({ assignment: inspectAssignment(store, engine, assignment).view })
+        return c.json({ assignment: inspectAssignment(store, engine, assignments.byTask(namespace, listId, taskId) ?? assignment).view })
     })
 
     app.post(`${taskRoute}/release`, async (c) => {
@@ -312,14 +402,15 @@ export function createTodoRoutes(store: Store, getEngine: () => SyncEngine | nul
         if (!engine) return c.json({ error: 'Not connected' }, 503)
         const current = inspectAssignment(store, engine, assignment).view
         if (current.phase === 'released') return c.json({ assignment: current })
-        const terminalSource = await connector.getTask(listId, taskId).then((task) => task.status === 'completed', (error) => {
+        const terminalSource = await connector.getTask(listId, taskId, { fresh: true }).then((task) => task.status === 'completed', (error) => {
             if (error instanceof TodoMcpError && error.code === 'todo_missing') return true
             if (current.phase === 'failed' || current.phase === 'offline') return false
             throw error
         })
         const phase = inspectAssignment(store, engine, assignment).view.phase
-        if ((!terminalSource && !['failed', 'offline'].includes(phase)) ||
-            completing.has(assignment.id) || inFlight.has(assignment.id)) return c.json({ error: 'Assignment unavailable' }, 409)
+        if ((!terminalSource && !['failed', 'offline'].includes(phase)
+                && !(assignment.spawnMachineId && phase === 'indeterminate')) ||
+            completing.has(assignment.id) || inFlight.has(assignment.id) || launching.has(assignment.id)) return c.json({ error: 'Assignment unavailable' }, 409)
         const updated = assignments.release(assignment)
         if (!updated) return c.json({ error: 'Assignment changed' }, 409)
         return c.json({ assignment: inspectAssignment(store, engine, updated).view })
@@ -334,7 +425,7 @@ export function createTodoRoutes(store: Store, getEngine: () => SyncEngine | nul
         completing.add(taskKey)
         if (assignment) completing.add(assignment.id)
         try {
-            const task = await connector.getTask(listId, taskId)
+            const task = await connector.getTask(listId, taskId, { fresh: true })
             const current = assignments.byTask(namespace, listId, taskId)
             if (current?.id !== assignment?.id || current?.resultMessageId !== assignment?.resultMessageId) {
                 return c.json({ error: 'Assignment changed' }, 409)

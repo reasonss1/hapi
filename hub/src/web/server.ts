@@ -400,7 +400,7 @@ export function createWebApp(options: {
     const todoCommand = process.env.HAPI_TODO_MCP_COMMAND?.trim()
     const todoNamespace = process.env.HAPI_TODO_NAMESPACE?.trim()
     app.route('/api/todo', createTodoRoutes(options.store, options.getSyncEngine, todoCommand && todoNamespace
-        ? { namespace: todoNamespace, connector: new TodoMcp(todoCommand) }
+        ? { namespace: todoNamespace, connector: new TodoMcp(todoCommand), dataDir: configuration.dataDir }
         : null))
     app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))
     app.route('/api', createStorageRoutes(configuration.dbPath))

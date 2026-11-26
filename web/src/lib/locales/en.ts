@@ -1,4 +1,11 @@
 export default {
+  'todo.device': "Device",
+  'todo.selectDevice': "Choose a device",
+  'todo.noDevices': "No devices online",
+  'todo.directory': "Working directory (optional)",
+  'todo.defaultDirectory': "Device default",
+  'todo.newDeviceSession': "Starts a new Codex session on this device.",
+  'todo.workspaceUnavailable': "This device has no default workspace. Enter a working directory and try again.",
   'todo.title': "To Do",
   'todo.backToTasks': "Back to tasks",
   'todo.list': "Task list",

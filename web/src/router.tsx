@@ -83,7 +83,7 @@ import SettingsAboutPage from '@/routes/settings/about'
 import SettingsStoragePage from '@/routes/settings/storage'
 import SettingsUsagePage from '@/routes/settings/usage'
 import SharePage from '@/routes/share'
-import TodoPage, { TodoIcon, parseTodoSearch, type TodoSearch } from '@/routes/todo'
+import TodoPage, { TodoIcon, parseTodoSearch } from '@/routes/todo'
 import { retargetSharePendingTransfer, setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer, parseShareSearch } from '@/lib/shareTransfer'
 
@@ -1121,31 +1121,23 @@ function NewSessionPage() {
     const queryClient = useQueryClient()
     const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
     const { t } = useTranslation()
-    const { directory: initialDirectory, machineId: initialMachineId, shareTransferId, todoReturn } = newSessionRoute.useSearch()
+    const { directory: initialDirectory, machineId: initialMachineId, shareTransferId } = newSessionRoute.useSearch()
 
     const handleCancel = useCallback(() => {
         if (shareTransferId) {
             void deleteShareTransfer(shareTransferId)
         }
-        if (todoReturn) {
-            navigate({ to: '/todos', search: todoReturn, replace: true })
-            return
-        }
         navigate({
             to: '/sessions',
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
-    }, [navigate, shareTransferId, todoReturn])
+    }, [navigate, shareTransferId])
 
     const handleSuccess = useCallback((sessionId: string) => {
         if (shareTransferId) {
             setSharePendingTransfer(shareTransferId, sessionId)
         }
         void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
-        if (todoReturn) {
-            navigate({ to: '/todos', search: { ...todoReturn, session: sessionId }, replace: true })
-            return
-        }
         // Replace current page with /sessions to clear spawn flow from history
         navigate({
             to: '/sessions',
@@ -1160,7 +1152,7 @@ function NewSessionPage() {
                 ...PRESERVE_SESSION_SIDEBAR_SCROLL,
             })
         })
-    }, [navigate, queryClient, shareTransferId, todoReturn])
+    }, [navigate, queryClient, shareTransferId])
 
     const handleChooseFolder = useCallback((args: { machineId: string | null; directory: string }) => {
         // Forward the currently-selected machine so /browse opens scoped to
@@ -1168,12 +1160,11 @@ function NewSessionPage() {
         // disagree if the user changed machines without yet creating a
         // session. Preserve shareTransferId so a share-target spawn that
         // detours through /browse still seeds the composer after success.
-        const search: { machineId?: string; shareTransferId?: string; todoReturn?: TodoSearch } = {}
+        const search: { machineId?: string; shareTransferId?: string } = {}
         if (args.machineId) search.machineId = args.machineId
         if (shareTransferId) search.shareTransferId = shareTransferId
-        if (todoReturn) search.todoReturn = todoReturn
         navigate({ to: '/browse', search })
-    }, [navigate, shareTransferId, todoReturn])
+    }, [navigate, shareTransferId])
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -1209,7 +1200,6 @@ function NewSessionPage() {
                     onChooseFolder={handleChooseFolder}
                     initialDirectory={initialDirectory}
                     initialMachineId={initialMachineId}
-                    initialAgent={todoReturn ? 'codex' : undefined}
                 />
             </div>
         </div>
@@ -1222,14 +1212,16 @@ function BrowsePage() {
     const goBack = useAppGoBack()
     const { machines, isLoading: machinesLoading } = useMachines(api, true)
     const { t } = useTranslation()
-    const { machineId: initialMachineId, shareTransferId, todoReturn } = browseRoute.useSearch()
+    const { machineId: initialMachineId, shareTransferId } = browseRoute.useSearch()
 
     const handleStartSession = useCallback((machineId: string, directory: string) => {
         navigate({
             to: '/sessions/new',
-            search: { directory, machineId, shareTransferId, todoReturn }
+            search: shareTransferId
+                ? { directory, machineId, shareTransferId }
+                : { directory, machineId }
         })
-    }, [navigate, shareTransferId, todoReturn])
+    }, [navigate, shareTransferId])
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -1381,7 +1373,6 @@ type NewSessionSearch = {
     directory?: string
     machineId?: string
     shareTransferId?: string
-    todoReturn?: TodoSearch
 }
 
 const newSessionRoute = createRoute({
@@ -1398,10 +1389,6 @@ const newSessionRoute = createRoute({
         if (typeof search.shareTransferId === 'string' && search.shareTransferId) {
             result.shareTransferId = search.shareTransferId
         }
-        if (typeof search.todoReturn === 'object' && search.todoReturn !== null) {
-            const next = parseTodoSearch(search.todoReturn as Record<string, unknown>)
-            if (next.list && next.task) result.todoReturn = next
-        }
         return result
     },
     component: NewSessionPage,
@@ -1410,17 +1397,13 @@ const newSessionRoute = createRoute({
 const browseRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/browse',
-    validateSearch: (search: Record<string, unknown>): { machineId?: string; shareTransferId?: string; todoReturn?: TodoSearch } => {
-        const result: { machineId?: string; shareTransferId?: string; todoReturn?: TodoSearch } = {}
+    validateSearch: (search: Record<string, unknown>): { machineId?: string; shareTransferId?: string } => {
+        const result: { machineId?: string; shareTransferId?: string } = {}
         if (typeof search.machineId === 'string' && search.machineId) {
             result.machineId = search.machineId
         }
         if (typeof search.shareTransferId === 'string' && search.shareTransferId) {
             result.shareTransferId = search.shareTransferId
-        }
-        if (typeof search.todoReturn === 'object' && search.todoReturn !== null) {
-            const next = parseTodoSearch(search.todoReturn as Record<string, unknown>)
-            if (next.list && next.task) result.todoReturn = next
         }
         return result
     },

@@ -33,3 +33,4 @@ export type TodoDetailResponse = {
 }
 
 export type TodoDelivery = { requestId: string; notes?: string }
+export type TodoAssignDelivery = TodoDelivery & { machineId: string; path?: string }

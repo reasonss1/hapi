@@ -1,47 +1,50 @@
 import { useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { randomId } from '@/lib/randomId'
 import { useTranslation } from '@/lib/use-translation'
-import type { TodoDelivery, TodoDetailResponse } from '@/types/todo'
+import type { TodoAssignDelivery, TodoDelivery, TodoDetailResponse } from '@/types/todo'
 import type { TodoSearch } from './todo'
 
-export type TodoCandidate = { id: string; label: string; disabled?: string }
+export type TodoDevice = { id: string; label: string }
 
 type TodoAction =
-    | { type: 'assign'; delivery: TodoDelivery & { sessionId: string } }
+    | { type: 'assign'; delivery: TodoAssignDelivery }
     | { type: 'continue'; delivery: TodoDelivery }
     | { type: 'result'; messageId: string }
     | { type: 'retry' }
 
 type TodoConfirmation = 'complete' | 'release'
 
-const lastSessionKey = 'hapi:todo:lastSession'
-
-function readLastSession(): string {
-    try { return localStorage.getItem(lastSessionKey) ?? '' } catch { return '' }
+function readPreference(key: string | null): string {
+    if (!key) return ''
+    try { return localStorage.getItem(key) ?? '' } catch { return '' }
 }
 
 export default function TodoDetail(props: {
     api: ApiClient
     listId: string
     data: TodoDetailResponse
-    candidates: TodoCandidate[]
+    devices: TodoDevice[]
+    preview?: boolean
     search: TodoSearch
     assignee?: string
     refresh: () => Promise<void>
 }) {
     const { t, locale } = useTranslation()
-    const { api, listId, data, search, candidates, refresh } = props
+    const { api, listId, data, search, devices, preview, refresh } = props
+    const scope = api.getReadStateScope?.()
+    const preferenceKey = scope ? `hapi:todo:lastDevice:${scope}` : null
     const { task, results } = data
     const assignment = task.assignment
     const [assigning, setAssigning] = useState(Boolean(search.assign))
     const [continuing, setContinuing] = useState(false)
     const [confirmation, setConfirmation] = useState<TodoConfirmation | null>(search.complete ? 'complete' : null)
-    const [sessionId, setSessionId] = useState(() => search.session ?? readLastSession())
+    const [machineId, setMachineId] = useState<string | null>(null)
+    const [path, setPath] = useState('')
     const [notes, setNotes] = useState('')
     const attempt = useRef<{ fingerprint: string; id: string } | null>(null)
     const inFlight = useRef(false)
@@ -51,8 +54,11 @@ export default function TodoDetail(props: {
     const canContinue = !completed && (assignment?.phase === 'assigned' || assignment?.phase === 'ready')
     const canRelease = assignment && assignment.phase !== 'released' && assignment.phase !== 'completed'
         && (completed || assignment.phase === 'failed' || assignment.phase === 'offline')
-    const availableSession = candidates.some((candidate) => candidate.id === sessionId && !candidate.disabled)
-        ? sessionId : candidates.find((candidate) => !candidate.disabled)?.id ?? ''
+    const preferredDevice = readPreference(preferenceKey)
+    const device = machineId === null
+        ? devices.find((item) => item.id === preferredDevice) ?? devices[0]
+        : devices.find((item) => item.id === machineId)
+    const assignTarget = device ? { machineId: device.id, path: path.trim() || undefined } : null
 
     const action = useMutation({
         mutationFn: async (operation: TodoAction) => {
@@ -64,7 +70,7 @@ export default function TodoDetail(props: {
         },
         onSuccess: (_, operation) => {
             if (operation.type === 'assign') {
-                try { localStorage.setItem(lastSessionKey, operation.delivery.sessionId) } catch { /* Storage can be disabled. */ }
+                try { if (preferenceKey) localStorage.setItem(preferenceKey, operation.delivery.machineId) } catch { /* Storage can be disabled. */ }
             }
             if (operation.type === 'assign' || operation.type === 'continue') {
                 setAssigning(false)
@@ -90,14 +96,15 @@ export default function TodoDetail(props: {
     }
 
     function send(type: 'assign' | 'continue') {
+        if (preview) return
         const text = notes.trim()
-        if ((type === 'assign' && !availableSession) || (type === 'continue' && !text)) return
-        const target = type === 'assign' ? availableSession : assignment?.sessionId
+        if ((type === 'assign' && !assignTarget) || (type === 'continue' && !text)) return
+        const target = type === 'assign' ? assignTarget : assignment?.sessionId
         const fingerprint = JSON.stringify([type, target, text])
         if (attempt.current?.fingerprint !== fingerprint) attempt.current = { fingerprint, id: randomId() }
         const delivery = { requestId: attempt.current.id, notes: text || undefined }
-        if (type === 'assign') run({ type, delivery: { ...delivery, sessionId: availableSession } })
-        else run({ type, delivery })
+        if (type === 'assign' && assignTarget) run({ type, delivery: { ...delivery, ...assignTarget } })
+        if (type === 'continue') run({ type, delivery })
     }
 
     const busy = action.isPending || confirm.isPending
@@ -113,7 +120,7 @@ export default function TodoDetail(props: {
 
     return (
         <article className="space-y-5 p-4 sm:p-5">
-            <div>
+            <div className="lg:pr-7">
                 <h2 className="break-words text-xl font-semibold">{task.title}</h2>
                 {task.dueDateTime ? <p className="mt-1 text-sm text-[var(--app-hint)]">{t('todo.due', { date: task.dueDateTime.dateTime.slice(0, 10) })}</p> : null}
                 {task.body ? <p className="mt-3 whitespace-pre-wrap break-words text-sm">{task.body}</p> : null}
@@ -172,34 +179,38 @@ export default function TodoDetail(props: {
                     </ul>
                 </section>
             ) : null}
-            {!completed && canAssign && assigning ? (
-                <form className="space-y-3 border-t border-[var(--app-border)] pt-3" onSubmit={(event) => { event.preventDefault(); send('assign') }}>
-                    <label className="block space-y-1 text-sm">
-                        <span>{t('todo.agentSession')}</span>
-                        <select className={fieldClass} value={availableSession} onChange={(event) => setSessionId(event.target.value)}>
-                            <option value="" disabled>{t('todo.selectSession')}</option>
-                            {candidates.map((candidate) => (
-                                <option key={candidate.id} value={candidate.id} disabled={Boolean(candidate.disabled)}>
-                                    {candidate.disabled ? `${candidate.label} · ${t(`todo.session.${candidate.disabled}`)}` : candidate.label}
-                                </option>
-                            ))}
-                        </select>
-                    </label>
-                    <Link to="/sessions/new" search={{ todoReturn: { list: listId, task: task.id, filter: search.filter, assign: true } }}
-                        className="inline-block text-sm text-[var(--app-link)] hover:underline">{t('todo.newSession')}</Link>
+            {!preview && !completed && canAssign && assigning ? (
+                <form className="space-y-3 rounded-xl border border-[var(--app-border)] p-3.5" onSubmit={(event) => { event.preventDefault(); send('assign') }}>
+                    <h3 className={headingClass}>{t('todo.assign')}</h3>
+                    <>
+                            <label className="block space-y-1 text-sm">
+                                <span>{t('todo.device')}</span>
+                                <select className={fieldClass} value={device?.id ?? ''} onChange={(event) => { setMachineId(event.target.value); setPath('') }}>
+                                    <option value="" disabled>{t(devices.length ? 'todo.selectDevice' : 'todo.noDevices')}</option>
+                                    {devices.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                                </select>
+                            </label>
+                            {device ? (
+                                <label className="block space-y-1 text-sm">
+                                    <span>{t('todo.directory')}</span>
+                                    <input className={fieldClass} value={path} placeholder={t('todo.defaultDirectory')} onChange={(event) => setPath(event.target.value)} />
+                                </label>
+                            ) : null}
+                            <p className="text-xs text-[var(--app-hint)]">{t('todo.newDeviceSession')}</p>
+                    </>
                     {notesField}
-                    <Button type="submit" disabled={busy || !candidates.some((candidate) => candidate.id === availableSession && !candidate.disabled)}>
+                    <Button type="submit" disabled={busy || !assignTarget}>
                         {t(busy ? 'todo.assigning' : 'todo.start')}
                     </Button>
                 </form>
             ) : null}
-            {canContinue && continuing ? (
+            {!preview && canContinue && continuing ? (
                 <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); send('continue') }}>
                     {notesField}
                     <Button type="submit" disabled={busy || !notes.trim()}>{t('todo.sendInstructions')}</Button>
                 </form>
             ) : null}
-            <div className="flex flex-wrap gap-2 empty:hidden">
+            {!preview ? <div className="flex flex-wrap gap-2 empty:hidden">
                 {!completed && canAssign && !assigning ? <Button variant="outline" onClick={() => setAssigning(true)}>{t('todo.assign')}</Button> : null}
                 {canContinue && !continuing ? (
                     <Button variant="outline" onClick={() => { setNotes(''); setContinuing(true) }} disabled={busy}>{t('todo.continue')}</Button>
@@ -209,14 +220,15 @@ export default function TodoDetail(props: {
                 ) : null}
                 {canRelease ? <Button variant="outline" onClick={() => setConfirmation('release')} disabled={busy}>{t('todo.release')}</Button> : null}
                 {canComplete ? <Button onClick={() => setConfirmation('complete')} disabled={busy}>{t('todo.confirm')}</Button> : null}
-            </div>
+            </div> : null}
             {action.isError ? (
                 <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-red-600">
-                    <span>{t('todo.actionFailed')}</span>
+                    <span>{t(action.error instanceof ApiError && action.error.code === 'todo_workspace_unavailable'
+                        ? 'todo.workspaceUnavailable' : 'todo.actionFailed')}</span>
                     {action.variables ? <Button size="sm" variant="outline" onClick={() => run(action.variables!)}>{t('todo.retry')}</Button> : null}
                 </div>
             ) : null}
-            <ConfirmDialog isOpen={Boolean(releasing ? canRelease : confirmation === 'complete' && canComplete)}
+            <ConfirmDialog isOpen={!preview && Boolean(releasing ? canRelease : confirmation === 'complete' && canComplete)}
                 onClose={() => setConfirmation(null)} title={t(releasing ? 'todo.release' : 'todo.confirm')}
                 description={t(releasing ? 'todo.releaseDescription' : 'todo.confirmDescription', { title: task.title })}
                 confirmLabel={t(releasing ? 'todo.release' : 'todo.confirm')} confirmingLabel={t('todo.confirming')}

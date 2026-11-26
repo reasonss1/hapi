@@ -4254,9 +4254,19 @@ export class SyncEngine {
         startingMode?: 'remote' | 'pty',
         // Required for fresh machine spawns so the runner stamps the HAPI id on
         // argv before the first webhook (#1911 Major: unreapable window).
-        namespace?: string
+        namespace?: string,
+        reservation?: { sessionId: string; claim: () => boolean }
     ): ReturnType<RpcGateway['spawnSession']> {
         this.assertMachineNotDeleting(machineId, namespace ?? this.getMachine(machineId)?.namespace ?? 'default')
+        if (reservation) {
+            const stored = this.store.sessions.getSession(reservation.sessionId)
+            const metadata = asRecord(stored?.metadata)
+            if (!namespace || existingSessionId || (stored && (!isMachineSpawnPreallocatedStub(stored)
+                || stored.namespace !== namespace || metadata?.machineId !== machineId
+                || metadata?.path !== directory || metadata?.flavor !== agent))) {
+                return { type: 'error', message: 'Invalid fresh session reservation', childStarted: false }
+            }
+        }
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
         // A runner restart before the first webhook then left no persisted PID
@@ -4267,7 +4277,7 @@ export class SyncEngine {
         if (!allocatedSessionId && namespace) {
             const machine = this.getMachineByNamespace(machineId, namespace)
                 ?? this.getMachine(machineId)
-            allocatedSessionId = randomUUID()
+            allocatedSessionId = reservation?.sessionId ?? randomUUID()
             this.sessionCache.getOrCreateSession(
                 `machine-spawn:${allocatedSessionId}`,
                 {
@@ -4287,6 +4297,8 @@ export class SyncEngine {
             )
             preallocated = true
         }
+
+        if (reservation && !reservation.claim()) return { type: 'error', message: 'Fresh session reservation has already been claimed' }
 
         let result: Awaited<ReturnType<RpcGateway['spawnSession']>>
         try {

@@ -1,4 +1,11 @@
 export default {
+  'todo.device': "デバイス",
+  'todo.selectDevice': "デバイスを選択",
+  'todo.noDevices': "オンラインのデバイスがありません",
+  'todo.directory': "作業ディレクトリ（任意）",
+  'todo.defaultDirectory': "デバイスの既定値",
+  'todo.newDeviceSession': "このデバイスで新しい Codex セッションを開始します。",
+  'todo.workspaceUnavailable': "このデバイスに既定の作業ディレクトリがありません。作業ディレクトリを入力してください。",
   'todo.phase.released': '割り当て解除済み',
   'todo.release': '割り当てを解除',
   'todo.releaseDescription': '「{title}」と元のセッションの関連付けを解除しますか？セッションですでに始まった作業は続く場合があります。',

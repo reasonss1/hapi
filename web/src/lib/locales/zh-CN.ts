@@ -1,4 +1,11 @@
 export default {
+  'todo.device': "设备",
+  'todo.selectDevice': "请选择设备",
+  'todo.noDevices': "暂无在线设备",
+  'todo.directory': "工作目录（可选）",
+  'todo.defaultDirectory': "使用设备默认目录",
+  'todo.newDeviceSession': "将在此设备上新建 Codex 会话。",
+  'todo.workspaceUnavailable': "此设备没有可用的默认目录，请填写工作目录后重试。",
   'todo.title': "待办",
   'todo.backToTasks': "返回待办列表",
   'todo.list': "待办清单",

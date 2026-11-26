@@ -1,4 +1,11 @@
 export default {
+  'todo.device': "Устройство",
+  'todo.selectDevice': "Выберите устройство",
+  'todo.noDevices': "Нет устройств в сети",
+  'todo.directory': "Рабочая папка (необязательно)",
+  'todo.defaultDirectory': "По умолчанию для устройства",
+  'todo.newDeviceSession': "На этом устройстве откроется новая сессия Codex.",
+  'todo.workspaceUnavailable': "На устройстве нет рабочей папки по умолчанию. Укажите её и повторите попытку.",
   'todo.phase.released': 'Назначение снято',
   'todo.release': 'Снять назначение',
   'todo.releaseDescription': 'Отвязать задачу «{title}» от прежней сессии? Уже начатая в сессии работа может продолжиться.',

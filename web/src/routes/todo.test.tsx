@@ -5,7 +5,7 @@ import type { ApiClient } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { TodoDetailResponse, TodoTask } from '@/types/todo'
 import TodoPage from './todo'
-import TodoDetail from './todo-detail'
+import TodoDetail, { type TodoDevice } from './todo-detail'
 
 const mocks = vi.hoisted(() => ({
     navigate: vi.fn(),
@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     getTodoLists: vi.fn(),
     getTodoTasks: vi.fn(),
     getTodoAssignments: vi.fn(),
+    getReadStateScope: vi.fn(() => 'https://example.test:default'),
     assignTodoTask: vi.fn(),
     completeTodoTask: vi.fn(),
     releaseTodoAssignment: vi.fn(),
@@ -36,20 +37,27 @@ const task: TodoTask = {
 
 function mount(view: React.ReactNode) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    return render(<QueryClientProvider client={client}><I18nProvider>{view}</I18nProvider></QueryClientProvider>)
+    return render(view, { wrapper: ({ children }) => <QueryClientProvider client={client}><I18nProvider>{children}</I18nProvider></QueryClientProvider> })
 }
 
+const defaultDevices: TodoDevice[] = [{ id: 'device-1', label: 'Office' }, { id: 'device-2', label: 'Home' }]
 function renderDetail(data: TodoDetailResponse) {
-    return mount(<TodoDetail api={mocks as unknown as ApiClient} listId="list" data={data} search={{ assign: true }}
-        candidates={[{ id: 'busy', label: 'Busy Codex', disabled: 'busy' }, { id: 'idle', label: 'Idle Codex' }]}
-        refresh={vi.fn().mockResolvedValue(undefined)} />)
+    const refresh = vi.fn().mockResolvedValue(undefined)
+    const view = (devices: TodoDevice[]) => (
+        <TodoDetail api={mocks as unknown as ApiClient} listId="list" data={data}
+            search={{ assign: true }} devices={devices} refresh={refresh} />
+    )
+    const mounted = mount(view(defaultDevices))
+    return { ...mounted, setDevices: (devices: TodoDevice[]) => mounted.rerender(view(devices)) }
 }
 
 describe('Todo Web page', () => {
     beforeEach(() => {
         vi.resetAllMocks()
+        mocks.getReadStateScope.mockReturnValue('https://example.test:default')
         localStorage.setItem('hapi-lang', 'en')
-        localStorage.removeItem('hapi:todo:lastSession')
+        localStorage.removeItem('hapi:todo:lastDevice:https://example.test:default')
+        localStorage.removeItem('hapi:todo:lastList:https://example.test:default')
     })
     afterEach(cleanup)
 
@@ -64,23 +72,46 @@ describe('Todo Web page', () => {
         expect(mocks.navigate).toHaveBeenCalledWith({ to: '/todos', search: { list: 'list', task: 'task', filter: 'open', assign: true } })
     })
 
-    it('retries a failed delivery with the same request identifier and chosen idle session', async () => {
+    it('retries with the same device, working directory, and delivery identifier', async () => {
         mocks.assignTodoTask
             .mockRejectedValueOnce(new Error('network'))
             .mockResolvedValueOnce({ assignment: {} })
         renderDetail({ task })
 
-        expect(screen.getByRole('option', { name: /Busy Codex/ })).toBeDisabled()
-        expect(screen.getByRole('combobox', { name: 'Agent session' })).toHaveValue('idle')
+        expect(screen.queryByRole('combobox', { name: 'Agent session' })).toBeNull()
+        fireEvent.change(screen.getByRole('combobox', { name: 'Device' }), { target: { value: 'device-2' } })
+        fireEvent.change(screen.getByRole('textbox', { name: 'Working directory (optional)' }), { target: { value: '/workspace/project' } })
         fireEvent.change(screen.getByRole('textbox', { name: 'Additional instructions' }), { target: { value: 'Check Linux' } })
         fireEvent.click(screen.getByRole('button', { name: 'Start task' }))
         await screen.findByRole('alert')
         fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
         await waitFor(() => expect(mocks.assignTodoTask).toHaveBeenCalledTimes(2))
         const firstCall = mocks.assignTodoTask.mock.calls[0]
-        expect(firstCall).toEqual(['list', 'task', { requestId: expect.any(String), notes: 'Check Linux', sessionId: 'idle' }])
+        expect(firstCall).toEqual(['list', 'task', { requestId: expect.any(String), notes: 'Check Linux', machineId: 'device-2', path: '/workspace/project' }])
         expect(mocks.assignTodoTask.mock.calls[1]).toEqual(firstCall)
-        await waitFor(() => expect(localStorage.getItem('hapi:todo:lastSession')).toBe('idle'))
+        await waitFor(() => expect(localStorage.getItem('hapi:todo:lastDevice:https://example.test:default')).toBe('device-2'))
+    })
+
+    it('requires reselecting a device when the explicitly selected device goes offline', () => {
+        const { setDevices } = renderDetail({ task })
+        const select = screen.getByRole('combobox', { name: 'Device' })
+        fireEvent.change(select, { target: { value: 'device-2' } })
+        setDevices([defaultDevices[0]])
+        expect(select).toHaveValue('')
+        expect(screen.getByRole('button', { name: 'Start task' })).toBeDisabled()
+        fireEvent.change(select, { target: { value: 'device-1' } })
+        expect(screen.getByRole('button', { name: 'Start task' })).toBeEnabled()
+    })
+
+    it('loads a remembered list while the lists and status requests are still pending', async () => {
+        localStorage.setItem('hapi:todo:lastList:https://example.test:default', 'list')
+        mocks.getTodoStatus.mockImplementation(() => new Promise(() => {}))
+        mocks.getTodoLists.mockImplementation(() => new Promise(() => {}))
+        mocks.getTodoTasks.mockResolvedValue({ tasks: [task], nextCursor: null })
+        mount(<TodoPage search={{}} />)
+        expect(await screen.findByRole('button', { name: task.title })).toBeInTheDocument()
+        expect(mocks.getTodoLists).toHaveBeenCalled()
+        expect(mocks.getTodoTasks).toHaveBeenCalledWith('list', undefined, expect.anything())
     })
 
     it('keeps confirmation unavailable while the assigned reply has not been selected', () => {

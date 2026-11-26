@@ -89,8 +89,52 @@ function normalizeTask(value: z.infer<typeof task>) {
 
 export type TodoSourceTask = ReturnType<typeof normalizeTask>
 
+type TodoTaskPage = { tasks: TodoSourceTask[]; nextCursor: string | null }
+
+class TodoReadCache<T> {
+    private readonly entries = new Map<string, { value: Promise<T>; expiresAt: number }>()
+
+    constructor(private readonly ttl: number, private readonly capacity: number) {}
+
+    read(key: string, load: () => Promise<T>): Promise<T> {
+        const cached = this.entries.get(key)
+        if (cached && cached.expiresAt > performance.now()) return cached.value
+
+        this.entries.delete(key)
+        if (this.entries.size >= this.capacity) {
+            const oldest = this.entries.keys().next()
+            if (!oldest.done) this.entries.delete(oldest.value)
+        }
+        const entry = {
+            value: load().then((result) => {
+                entry.expiresAt = performance.now() + this.ttl
+                return result
+            }, (error) => {
+                if (this.entries.get(key) === entry) this.entries.delete(key)
+                throw error
+            }),
+            expiresAt: Infinity,
+        }
+        this.entries.set(key, entry)
+        return entry.value
+    }
+
+    delete(key: string) {
+        this.entries.delete(key)
+    }
+
+    deletePrefix(prefix: string) {
+        for (const key of this.entries.keys()) {
+            if (key.startsWith(prefix)) this.entries.delete(key)
+        }
+    }
+}
+
 export class TodoMcp {
     private client: Promise<Client> | undefined
+    private readonly lists = new TodoReadCache<z.infer<typeof list>[]>(60_000, 1)
+    private readonly taskPages = new TodoReadCache<TodoTaskPage>(20_000, 128)
+    private readonly tasks = new TodoReadCache<TodoSourceTask>(15_000, 256)
 
     constructor(private readonly command: string) {
         if (!isAbsolute(command)) throw new Error('HAPI_TODO_MCP_COMMAND requires an absolute path')
@@ -122,42 +166,54 @@ export class TodoMcp {
         }
     }
 
-    async listLists() {
-        const lists: z.infer<typeof list>[] = []
-        const seen = new Set<string>()
-        let cursor: string | undefined
-        for (let page = 0; page < 10; page++) {
-            const result = collections(list).parse(await this.call('list-todo-task-lists', {
-                top: pageSize, ...pagination(cursor),
-            }))
-            lists.push(...result.value)
-            const next = nextPage(result['@odata.nextLink'], '/v1.0/me/todo/lists')
-            if (!next || seen.has(next)) break
-            seen.add(next)
-            cursor = next
-        }
-        return lists
+    listLists() {
+        return this.lists.read('lists', async () => {
+            const lists: z.infer<typeof list>[] = []
+            const seen = new Set<string>()
+            let cursor: string | undefined
+            for (let page = 0; page < 10; page++) {
+                const result = collections(list).parse(await this.call('list-todo-task-lists', {
+                    top: pageSize, ...pagination(cursor),
+                }))
+                lists.push(...result.value)
+                const next = nextPage(result['@odata.nextLink'], '/v1.0/me/todo/lists')
+                if (!next || seen.has(next)) break
+                seen.add(next)
+                cursor = next
+            }
+            return lists
+        })
     }
 
     async listTasks(listId: string, cursor?: string) {
-        const result = collections(task).parse(await this.call('list-todo-tasks', {
-            todoTaskListId: id.parse(listId), top: pageSize, ...pagination(cursor),
-        }))
-        return {
-            tasks: result.value.map(normalizeTask),
-            nextCursor: nextPage(result['@odata.nextLink'], '/v1.0/me/todo/lists/' + listId + '/tasks'),
-        }
+        id.parse(listId)
+        const page = pagination(cursor)
+        const key = `${listId}:${JSON.stringify(page)}`
+        return this.taskPages.read(key, async () => {
+            const result = collections(task).parse(await this.call('list-todo-tasks', {
+                todoTaskListId: listId, top: pageSize, ...page,
+            }))
+            return {
+                tasks: result.value.map(normalizeTask),
+                nextCursor: nextPage(result['@odata.nextLink'], '/v1.0/me/todo/lists/' + listId + '/tasks'),
+            }
+        })
     }
 
-    async getTask(listId: string, taskId: string) {
-        return normalizeTask(task.parse(await this.call('get-todo-task', {
-            todoTaskListId: id.parse(listId), todoTaskId: id.parse(taskId), expand: ['checklistItems'],
+    async getTask(listId: string, taskId: string, options?: { fresh?: boolean }) {
+        id.parse(listId)
+        id.parse(taskId)
+        const load = async () => normalizeTask(task.parse(await this.call('get-todo-task', {
+            todoTaskListId: listId, todoTaskId: taskId, expand: ['checklistItems'],
         })))
+        return options?.fresh ? load() : this.tasks.read(`${listId}:${taskId}`, load)
     }
 
     async completeTask(listId: string, taskId: string) {
         await this.call('update-todo-task', {
             todoTaskListId: id.parse(listId), todoTaskId: id.parse(taskId), body: { status: 'completed' },
         })
+        this.tasks.delete(`${listId}:${taskId}`)
+        this.taskPages.deletePrefix(`${listId}:`)
     }
 }

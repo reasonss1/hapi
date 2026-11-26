@@ -8,9 +8,13 @@ type AssignmentInput = {
     sessionId: string
     requestId: string
     text: string
+    spawnMachineId?: string | null
+    spawnPath?: string | null
 }
 
-export type TodoAssignmentRecord = AssignmentInput & {
+export type TodoAssignmentRecord = Omit<AssignmentInput, 'spawnMachineId' | 'spawnPath'> & {
+    spawnMachineId: string | null
+    spawnPath: string | null
     id: string
     localId: string
     createdAt: number
@@ -19,6 +23,7 @@ export type TodoAssignmentRecord = AssignmentInput & {
     result: string | null
     completedAt: number | null
     releasedAt: number | null
+    spawnDispatchedAt: number | null
 }
 
 type Outcome = { status: 'ok'; assignment: TodoAssignmentRecord }
@@ -26,7 +31,8 @@ type Outcome = { status: 'ok'; assignment: TodoAssignmentRecord }
 
 const columns = `id, namespace, list_id AS listId, task_id AS taskId, session_id AS sessionId,
     request_id AS requestId, local_id AS localId, text, created_at AS createdAt, updated_at AS updatedAt,
-    result_message_id AS resultMessageId, result, completed_at AS completedAt, released_at AS releasedAt`
+    result_message_id AS resultMessageId, result, completed_at AS completedAt, released_at AS releasedAt,
+    spawn_machine_id AS spawnMachineId, spawn_path AS spawnPath, spawn_dispatched_at AS spawnDispatchedAt`
 
 export class TodoAssignmentStore {
     constructor(private readonly db: Database) {
@@ -46,6 +52,9 @@ export class TodoAssignmentStore {
                 result TEXT,
                 completed_at INTEGER,
                 released_at INTEGER,
+                spawn_machine_id TEXT,
+                spawn_path TEXT,
+                spawn_dispatched_at INTEGER,
                 current INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(namespace, request_id)
             );
@@ -53,6 +62,10 @@ export class TodoAssignmentStore {
             CREATE UNIQUE INDEX IF NOT EXISTS todo_assignment_session ON todo_assignments(namespace, session_id)
                 WHERE current = 1 AND completed_at IS NULL AND released_at IS NULL;
         `)
+        const fields = new Set(db.query<{ name: string }, []>('PRAGMA table_info(todo_assignments)').all().map(({ name }) => name))
+        for (const [name, type] of [['spawn_machine_id', 'TEXT'], ['spawn_path', 'TEXT'], ['spawn_dispatched_at', 'INTEGER']]) {
+            if (!fields.has(name)) db.exec(`ALTER TABLE todo_assignments ADD COLUMN ${name} ${type}`)
+        }
     }
 
     byTask(namespace: string, listId: string, taskId: string): TodoAssignmentRecord | null {
@@ -73,7 +86,10 @@ export class TodoAssignmentStore {
         `).get(input.namespace, input.requestId)
         if (!prior) return null
         const current = this.byTask(input.namespace, input.listId, input.taskId)
-        return current?.id === prior.id && prior.sessionId === input.sessionId && prior.text === input.text
+        const sameTarget = input.spawnMachineId
+            ? prior.spawnMachineId === input.spawnMachineId && prior.spawnPath === input.spawnPath
+            : !prior.spawnMachineId && prior.sessionId === input.sessionId
+        return current?.id === prior.id && sameTarget && prior.text === input.text
             ? { status: 'ok', assignment: current }
             : { status: 'request_conflict' }
     }
@@ -83,12 +99,26 @@ export class TodoAssignmentStore {
         const localId = 'todo-assign:' + id
         const now = Date.now()
         this.db.query(`
-            INSERT INTO todo_assignments (id, namespace, list_id, task_id, session_id, request_id, local_id, text, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(id, input.namespace, input.listId, input.taskId, input.sessionId, input.requestId, localId, input.text, now, now)
+            INSERT INTO todo_assignments (id, namespace, list_id, task_id, session_id, request_id, local_id, text,
+                created_at, updated_at, spawn_machine_id, spawn_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(id, input.namespace, input.listId, input.taskId, input.sessionId, input.requestId, localId, input.text, now, now,
+            input.spawnMachineId ?? null, input.spawnPath ?? null)
         return { status: 'ok', assignment: {
             ...input, id, localId, createdAt: now, updatedAt: now, resultMessageId: null, result: null, completedAt: null, releasedAt: null,
+            spawnMachineId: input.spawnMachineId ?? null, spawnPath: input.spawnPath ?? null, spawnDispatchedAt: null,
         } }
+    }
+
+    claimSpawn(assignment: TodoAssignmentRecord): boolean {
+        return this.db.query(`
+            UPDATE todo_assignments SET spawn_dispatched_at = ? WHERE id = ? AND current = 1
+                AND completed_at IS NULL AND released_at IS NULL AND spawn_machine_id IS NOT NULL AND spawn_dispatched_at IS NULL
+        `).run(Date.now(), assignment.id).changes > 0
+    }
+
+    resetSpawn(assignment: TodoAssignmentRecord): void {
+        this.db.query('UPDATE todo_assignments SET spawn_dispatched_at = NULL WHERE id = ? AND current = 1').run(assignment.id)
     }
 
     reserve(input: AssignmentInput): Outcome {

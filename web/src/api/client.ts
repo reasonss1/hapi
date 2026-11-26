@@ -82,7 +82,7 @@ import type {
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import type { AgentToolId, AgentToolsResponse } from '@hapi/protocol/agentTools'
-import type { LinkedTodoAssignment, TodoAssignment, TodoDelivery, TodoDetailResponse, TodoList, TodoTask, TodoTasksResponse } from '@/types/todo'
+import type { LinkedTodoAssignment, TodoAssignDelivery, TodoAssignment, TodoDelivery, TodoDetailResponse, TodoList, TodoTask, TodoTasksResponse } from '@/types/todo'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
 import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
@@ -1200,7 +1200,7 @@ export class ApiClient {
         return await this.request(this.todoTaskPath(listId, taskId), { signal })
     }
 
-    async assignTodoTask(listId: string, taskId: string, body: TodoDelivery & { sessionId: string }): Promise<{ assignment: TodoAssignment }> {
+    async assignTodoTask(listId: string, taskId: string, body: TodoAssignDelivery): Promise<{ assignment: TodoAssignment }> {
         return await this.request(`${this.todoTaskPath(listId, taskId)}/assign`, { method: 'POST', body: JSON.stringify(body) })
     }
 

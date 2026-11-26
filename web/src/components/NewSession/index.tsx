@@ -110,7 +110,6 @@ export function NewSession(props: {
     onChooseFolder?: (args: { machineId: string | null; directory: string }) => void
     initialDirectory?: string
     initialMachineId?: string
-    initialAgent?: AgentType
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
@@ -154,7 +153,7 @@ export function NewSession(props: {
     const [directory, setDirectory] = useState(props.initialDirectory ?? '')
     const [suppressSuggestions, setSuppressSuggestions] = useState(false)
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
-    const [agent, setAgent] = useState<AgentType>(() => props.initialAgent ?? loadPreferredAgent())
+    const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
     // Snapshot a saved HAPI YOLO toggle for bridge flavors (incl. Cursor after
     // native-select move). null = no sticky key; true/false = migrate into native mode.
     const [legacyYoloBridge] = useState(() => {
@@ -376,7 +375,7 @@ export function NewSession(props: {
         const { hasStickyAgent, hasStickyYolo } = initialStickyPreferences
         // If the operator already edited permission/Yolo/model, do not swap the
         // agent — agent-change effects would wipe the restrictive choice.
-        const applyHubAgent = !props.initialAgent && !hasStickyAgent
+        const applyHubAgent = !hasStickyAgent
             && !editedAgentRef.current
             && !editedPermissionRef.current
             && !editedModelRef.current
