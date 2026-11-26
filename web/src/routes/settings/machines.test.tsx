@@ -9,10 +9,20 @@ import SettingsMachinesPage from '@/routes/settings/machines'
 const renameMachineMock = vi.fn()
 const deleteMachineMock = vi.fn()
 const machinesMock = vi.fn()
+const createRunnerEnrollmentMock = vi.fn()
+const canCreateRunnerEnrollment = vi.fn()
+const copyToClipboardMock = vi.fn()
+const baseUrlMock = vi.fn()
 
 vi.mock('@/lib/app-context', () => ({
-    useAppContext: () => ({ api: { renameMachine: renameMachineMock, deleteMachine: deleteMachineMock } }),
+    useAppContext: () => ({
+        api: { renameMachine: renameMachineMock, deleteMachine: deleteMachineMock },
+        baseUrl: baseUrlMock(),
+        createRunnerEnrollment: canCreateRunnerEnrollment() ? createRunnerEnrollmentMock : undefined,
+    }),
 }))
+
+vi.mock('@/lib/clipboard', () => ({ safeCopyToClipboard: async (text: string | Promise<string>) => copyToClipboardMock(await text) }))
 
 vi.mock('@/hooks/queries/useMachineManagement', () => ({
     useMachineManagement: () => ({ machines: machinesMock(), isLoading: false, error: null }),
@@ -60,10 +70,75 @@ describe('SettingsMachinesPage', () => {
         renameMachineMock.mockResolvedValue(undefined)
         deleteMachineMock.mockResolvedValue({ ok: true, deletedSessions: 2 })
         machinesMock.mockReturnValue([makeMachine()])
+        canCreateRunnerEnrollment.mockReturnValue(true)
+        createRunnerEnrollmentMock.mockResolvedValue({ code: 'test-enrollment-code', expiresAt: Date.now() + 600_000 })
+        copyToClipboardMock.mockResolvedValue(undefined)
+        baseUrlMock.mockReturnValue('https://hub.example.test')
     })
 
     afterEach(() => {
         cleanup()
+    })
+
+    it('opens the localized installation instructions even when the device list is empty', async () => {
+        window.localStorage.setItem('hapi-lang', 'zh-CN')
+        machinesMock.mockReturnValue([])
+        renderPage()
+
+        fireEvent.click(screen.getByRole('button', { name: '一键添加新设备' }))
+
+        const command = await screen.findByRole<HTMLTextAreaElement>('textbox', { name: 'HAPI 安装命令' })
+        expect(command.value).toContain('https://hub.example.test')
+        expect(command.value).toContain('test-enrollment-code')
+        expect(screen.getByText(/10 分钟内有效/)).toBeTruthy()
+        expect(createRunnerEnrollmentMock).toHaveBeenCalledOnce()
+        expect(copyToClipboardMock).not.toHaveBeenCalled()
+
+        fireEvent.click(screen.getByRole('button', { name: '复制安装命令' }))
+        await waitFor(() => expect(copyToClipboardMock).toHaveBeenCalledWith(command.value))
+        expect(createRunnerEnrollmentMock).toHaveBeenCalledOnce()
+    })
+
+    it('copies a fresh connection command directly, including on another copy', async () => {
+        createRunnerEnrollmentMock.mockResolvedValueOnce({ code: 'another-code', expiresAt: Date.now() + 600_000 })
+        renderPage()
+
+        const copy = screen.getByRole('button', { name: 'Copy install command' })
+        fireEvent.click(copy)
+
+        expect(await screen.findByText('Install command copied.')).toBeTruthy()
+        expect(copyToClipboardMock).toHaveBeenLastCalledWith(expect.stringContaining("'https://hub.example.test' 'another-code'"))
+
+        fireEvent.click(copy)
+        await waitFor(() => expect(copyToClipboardMock).toHaveBeenLastCalledWith(expect.stringContaining("'https://hub.example.test' 'test-enrollment-code'")))
+        expect(createRunnerEnrollmentMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('provides a token prompt on the new device and selects the command if copy fails', async () => {
+        canCreateRunnerEnrollment.mockReturnValue(false)
+        copyToClipboardMock.mockRejectedValueOnce(new Error('Clipboard unavailable'))
+        renderPage()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Copy install command' }))
+
+        expect((await screen.findByRole('alert')).textContent).toMatch(/copy the selected command manually/i)
+        expect(screen.getByText('Enter your server access token when prompted in Terminal.')).toBeTruthy()
+        const command = screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'HAPI install command' })
+        expect(document.activeElement).toBe(command)
+        expect(command.selectionEnd).toBe(command.value.length)
+        expect(command.value).toMatch(/'https:\/\/hub\.example\.test'$/)
+        expect(createRunnerEnrollmentMock).not.toHaveBeenCalled()
+    })
+
+    it('does not generate a command that downloads an installer over network HTTP', async () => {
+        baseUrlMock.mockReturnValue('http://hub.example.test')
+        renderPage()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Copy install command' }))
+
+        expect((await screen.findByRole('alert')).textContent).toMatch(/Open this Hub over HTTPS/)
+        expect(createRunnerEnrollmentMock).not.toHaveBeenCalled()
+        expect(copyToClipboardMock).not.toHaveBeenCalled()
     })
 
     it('falls back to the hostname and always shows host and platform', () => {

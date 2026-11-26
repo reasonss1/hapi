@@ -97,6 +97,8 @@ export type RetryIndeterminateMessageResponse =
 
 export type ProviderCredentialSource = 'env' | 'settings' | 'none'
 
+export type RunnerEnrollment = { code: string; expiresAt: number }
+
 export interface MaskedCredentialStatus {
     configured: boolean
     source: ProviderCredentialSource
@@ -1179,6 +1181,13 @@ export class ApiClient {
     async getMachines(options?: { includeOffline?: boolean }): Promise<MachinesResponse> {
         const query = options?.includeOffline ? '?includeOffline=1' : ''
         return await this.request<MachinesResponse>(`/api/machines${query}`)
+    }
+
+    async createRunnerEnrollment(accessToken: string): Promise<RunnerEnrollment> {
+        return await this.request<RunnerEnrollment>('/api/runner-enrollment', {
+            method: 'POST',
+            body: JSON.stringify({ accessToken })
+        })
     }
 
     async deleteMachine(machineId: string): Promise<{ ok: true; deletedSessions: number }> {

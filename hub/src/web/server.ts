@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
 import { FOLLOW_SESSION_REDIRECTS_HEADER, PROTOCOL_VERSION } from '@hapi/protocol'
+import { APP_VERSION } from '@hapi/protocol/buildInfo'
 import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
 import { getProviderEnvironment } from '../config/providerCredentials'
 import { readTitleProviderConfig } from '../sync/titleSuggestion'
@@ -29,6 +30,7 @@ import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
 import { createPluginRoutes } from './routes/plugins'
 import { createMachinesRoutes } from './routes/machines'
+import { createRunnerEnrollmentRoutes } from './routes/runnerEnrollment'
 import { createStorageRoutes } from './routes/storage'
 import { createUsageRoutes } from './routes/usage'
 import { createActivityRoutes } from './routes/activity'
@@ -259,7 +261,8 @@ function getStaticCacheHeaders(requestPath: string, options?: { spaFallback?: bo
         requestPath === '/' ||
         requestPath === '/index.html' ||
         requestPath === '/404.html' ||
-        requestPath === '/manifest.webmanifest'
+        requestPath === '/manifest.webmanifest' ||
+        requestPath === '/install-hapi-runner.cjs'
     ) {
         return {
             'Cache-Control': 'no-cache'
@@ -357,6 +360,7 @@ export function createWebApp(options: {
     // Capabilities are additive so older clients can ignore unknown fields.
     app.get('/health', (c) => c.json({
         status: 'ok',
+        appVersion: APP_VERSION,
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {
             workGraph: true,
@@ -368,6 +372,7 @@ export function createWebApp(options: {
 
     app.route('/api', createAuthRoutes(options.jwtSecret, options.store))
     app.route('/api', createBindRoutes(options.jwtSecret, options.store))
+    app.route('/api', createRunnerEnrollmentRoutes(configuration.cliApiToken, options.jwtSecret))
     const passkeyDeps = {
         jwtSecret: options.jwtSecret,
         store: options.store,

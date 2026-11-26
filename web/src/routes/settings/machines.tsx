@@ -10,6 +10,7 @@ import { forgetMachineLabel, getMachineTitle } from '@/hooks/useMachineLabels'
 import { forgetSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { queryKeys } from '@/lib/query-keys'
 import { MachineAgentTools } from '@/components/settings/MachineAgentTools'
+import { RunnerEnrollment } from '@/components/settings/RunnerEnrollment'
 import { SettingsPageContent, SettingsSection } from '@/components/settings/SettingsPrimitives'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 
@@ -177,12 +178,13 @@ function MachineRow(props: { api: ApiClient | null; machine: ManagedMachine }) {
 
 export default function SettingsMachinesPage() {
     const { t } = useTranslation()
-    const { api } = useAppContext()
+    const { api, baseUrl, createRunnerEnrollment } = useAppContext()
     const { machines, isLoading, error } = useMachineManagement(api)
 
     return (
         <SettingsPageContent description={t('settings.machines.description')}>
             <SettingsSection title={t('settings.machines.section')}>
+                <RunnerEnrollment key={baseUrl} baseUrl={baseUrl} createRunnerEnrollment={createRunnerEnrollment} />
                 {isLoading ? (
                     <div className="px-3 py-3 text-sm text-[var(--app-hint)]">{t('settings.machines.loading')}</div>
                 ) : error ? (

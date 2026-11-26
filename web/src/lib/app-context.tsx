@@ -1,11 +1,12 @@
 import { createContext, useContext, type ReactNode } from 'react'
-import type { ApiClient } from '@/api/client'
+import type { ApiClient, RunnerEnrollment } from '@/api/client'
 
 type AppContextValue = {
     api: ApiClient
     token: string
     baseUrl: string
     titleSuggestionAvailable?: boolean
+    createRunnerEnrollment?: () => Promise<RunnerEnrollment>
 }
 
 const AppContext = createContext<AppContextValue | null>(null)

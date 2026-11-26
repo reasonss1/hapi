@@ -545,7 +545,12 @@ function AppInner() {
     }
 
     return (
-        <AppContextProvider value={{ api, token, baseUrl, titleSuggestionAvailable }}>
+        <AppContextProvider value={{
+            api, token, baseUrl, titleSuggestionAvailable,
+            createRunnerEnrollment: authSource.type === 'accessToken'
+                ? () => api.createRunnerEnrollment(authSource.token)
+                : undefined,
+        }}>
             <VoiceProvider>
                 <PwaUpdateBannerWithStatusOffset
                     isSyncing={revealSyncing}

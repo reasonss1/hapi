@@ -44,17 +44,30 @@ function copyWithExecCommand(text: string): boolean {
     return copied
 }
 
-export async function safeCopyToClipboard(text: string): Promise<void> {
+export async function safeCopyToClipboard(text: string | Promise<string>): Promise<void> {
+    // WebKit requires initiating the clipboard write in the click handler.
+    // A ClipboardItem can supply its text after that gesture has completed.
+    if (typeof text !== 'string' && typeof ClipboardItem !== 'undefined'
+        && typeof navigator !== 'undefined' && navigator.clipboard?.write) {
+        try {
+            await navigator.clipboard.write([new ClipboardItem({ 'text/plain': text })])
+            return
+        } catch {
+            // Try copying the resolved text through the other supported APIs.
+        }
+    }
+
+    const value = typeof text === 'string' ? text : await text
     if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
         try {
-            await navigator.clipboard.writeText(text)
+            await navigator.clipboard.writeText(value)
             return
         } catch {
             // Fall through to legacy copy strategy.
         }
     }
 
-    if (copyWithExecCommand(text)) {
+    if (copyWithExecCommand(value)) {
         return
     }
 
