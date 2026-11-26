@@ -1466,7 +1466,7 @@ export default {
   'settings.machines.deleteError': '删除设备失败。',
   'settings.machines.source': '查看源码',
   'settings.machines.tools.runnerVersion': 'HAPI runner {version}',
-  'settings.machines.tools.runnerRequired': '在这台设备上更新一次 HAPI，即可开启远程 Agent 更新。',
+  'settings.machines.tools.runnerRequired': '此 Runner 缺少远程 Agent 更新功能。若此平台提供支持该功能的定制 HAPI，可通过「{addDevice}」安装。',
   'settings.machines.tools.title': 'Agent',
   'settings.machines.tools.check': '检查更新',
   'settings.machines.tools.checking': '检查中…',

@@ -1275,6 +1275,7 @@ export default {
   'settings.machines.enrollment.generateFailed': 'Не удалось подготовить команду. Нажмите кнопку копирования и повторите попытку.',
   'settings.machines.enrollment.insecureHub': 'Чтобы добавить устройство, откройте этот Hub по HTTPS.',
   'settings.machines.enrollment.expired': 'Срок действия кода истёк. Нажмите кнопку копирования, чтобы получить новый код.',
+  'settings.machines.tools.runnerRequired': 'Этот Runner не поддерживает удалённое обновление агентов. Если для вашей платформы есть специальная сборка HAPI с этой функцией, установите её через «{addDevice}».',
   'settings.machines.rename': 'Переименовать {name}',
   'settings.machines.namePlaceholder': 'Использовать имя хоста',
   'settings.machines.empty': 'Нет машин онлайн.',

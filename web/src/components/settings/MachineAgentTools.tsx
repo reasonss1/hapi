@@ -148,7 +148,9 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
                 {t('settings.machines.tools.runnerVersion', { version: machine.metadata?.happyCliVersion ?? '—' })}
             </div>
             {!supported ? (
-                <p className="text-[var(--app-hint)]">{t('settings.machines.tools.runnerRequired')}</p>
+                <p className="text-[var(--app-hint)]">
+                    {t('settings.machines.tools.runnerRequired', { addDevice: t('settings.machines.enrollment.add') })}
+                </p>
             ) : (
                 <>
                     <div className="flex flex-wrap items-center justify-between gap-2">

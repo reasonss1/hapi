@@ -1,12 +1,17 @@
 const { spawn } = require('node:child_process')
-const { randomUUID } = require('node:crypto')
+const { createHash, randomUUID } = require('node:crypto')
+const { createReadStream, createWriteStream } = require('node:fs')
 const fs = require('node:fs/promises')
 const { homedir } = require('node:os')
-const { join, resolve } = require('node:path')
+const { basename, dirname, join, relative, resolve } = require('node:path')
+const { Readable, Transform } = require('node:stream')
+const { pipeline } = require('node:stream/promises')
 const { setTimeout: delay } = require('node:timers/promises')
 
 const npmRegistry = 'https://registry.npmjs.org'
 const lockStaleMs = 30_000
+const customBuildPath = '/api/runner-builds/linux-x64'
+const updateCapability = 'agent-tool-updates'
 
 function hubOrigin(value) {
     const url = new URL(value)
@@ -196,15 +201,19 @@ async function authenticate(hub, code) {
     throw new Error('Could not sign in to the HAPI Hub. Check the Hub address and access token.')
 }
 
-async function machineIsOnline(hub, jwt, machineId, runnerPid) {
-    if (typeof machineId !== 'string' || !machineId) return false
+async function onlineMachine(hub, jwt, machineId, runnerPid) {
+    if (typeof machineId !== 'string' || !machineId || !Number.isSafeInteger(runnerPid)) return null
     try {
         const { machines } = await request(hub, '/api/machines', undefined, jwt)
-        return machines.some((machine) => machine.id === machineId && machine.active &&
-            machine.runnerState?.status === 'running' && (!runnerPid || machine.runnerState.pid === runnerPid))
+        return machines.find((machine) => machine.id === machineId && machine.active &&
+            machine.runnerState?.status === 'running' && machine.runnerState.pid === runnerPid) ?? null
     } catch {
-        return false
+        return null
     }
+}
+
+function supportsAgentUpdates(machine) {
+    return machine?.metadata?.capabilities?.includes(updateCapability) === true
 }
 
 function run(command, args, env, timeout) {
@@ -218,19 +227,20 @@ function run(command, args, env, timeout) {
     })
 }
 
-async function installRunner(hapiHome, hub, env) {
-    let version
+async function hubHealth(hub) {
+    let health
     try {
-        const health = await request(hub, '/health')
-        version = health.appVersion
+        health = await request(hub, '/health')
     } catch {
         throw new Error('Could not reach the HAPI Hub. Check the Hub address and your network connection.')
     }
-    if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
+    if (typeof health.appVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(health.appVersion)) {
         throw new Error('This Hub does not advertise a supported HAPI CLI version.')
     }
+    return health
+}
 
-    const prefix = join(hapiHome, 'runner-cli')
+async function installNpmRunner(prefix, version, env) {
     const runner = join(prefix, 'bin', 'hapi')
     const installedPackage = join(prefix, 'lib', 'node_modules', '@twsxtd', 'hapi', 'package.json')
     try {
@@ -247,6 +257,162 @@ async function installRunner(hapiHome, hub, env) {
     return runner
 }
 
+async function matchesBuild(runner, build) {
+    try {
+        if ((await fs.stat(runner)).size !== build.bytes) return false
+        const hash = createHash('sha256')
+        for await (const chunk of createReadStream(runner)) hash.update(chunk)
+        return hash.digest('hex') === build.sha256
+    } catch (error) {
+        if (error.code === 'ENOENT') return false
+        throw error
+    }
+}
+
+async function installCustomRunner(prefix, hub, jwt, version) {
+    const build = await request(hub, customBuildPath, undefined, jwt)
+    if (build.version !== version || typeof build.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(build.sha256) ||
+        !Number.isSafeInteger(build.bytes) || build.bytes <= 0 || build.bytes > 1024 ** 3) {
+        throw new Error('The Hub returned an invalid custom Runner build.')
+    }
+
+    const directory = join(prefix, 'builds', build.sha256)
+    const runner = join(directory, 'hapi')
+    if (await matchesBuild(runner, build)) return runner
+    await fs.mkdir(directory, { mode: 0o700, recursive: true })
+
+    console.log('Downloading the Hub’s custom HAPI Runner ' + version + '…')
+    const download = await fetch(hub + customBuildPath + '/' + build.sha256, {
+        headers: { Authorization: 'Bearer ' + jwt },
+        redirect: 'error',
+        signal: AbortSignal.timeout(15 * 60_000)
+    })
+    if (!download.ok || !download.body) throw new Error('Could not download the custom Runner (HTTP ' + download.status + ').')
+
+    const hash = createHash('sha256')
+    let bytes = 0
+    const verify = new Transform({
+        transform(chunk, _encoding, callback) {
+            bytes += chunk.length
+            if (bytes > build.bytes) {
+                callback(new Error('The custom Runner download has the wrong size.'))
+                return
+            }
+            hash.update(chunk)
+            callback(null, chunk)
+        }
+    })
+    const temporary = join(directory, randomUUID() + '.download')
+    try {
+        await pipeline(Readable.fromWeb(download.body), verify, createWriteStream(temporary, { flags: 'wx', mode: 0o600 }))
+        if (bytes !== build.bytes || hash.digest('hex') !== build.sha256) {
+            throw new Error('The custom Runner download failed verification.')
+        }
+        await fs.chmod(temporary, 0o755)
+        await fs.rename(temporary, runner)
+        return runner
+    } finally {
+        await fs.rm(temporary, { force: true })
+    }
+}
+
+async function activateCustomRunner(prefix, runner) {
+    const directory = join(prefix, 'bin')
+    const temp = join(directory, randomUUID() + '.link')
+    await fs.mkdir(directory, { mode: 0o700, recursive: true })
+    try {
+        await fs.symlink(relative(directory, runner), temp)
+        await fs.rename(temp, join(directory, 'hapi'))
+    } finally {
+        await fs.rm(temp, { force: true })
+    }
+}
+
+async function runnerExecutable(pid) {
+    try {
+        return await fs.readlink('/proc/' + pid + '/exe')
+    } catch (error) {
+        if (error.code === 'ENOENT' || error.code === 'ESRCH') return null
+        throw error
+    }
+}
+
+async function managedExecutable(prefix, state) {
+    if (!state?.pid || state.startedWithVersionHandoffDisabled) return null
+    const executable = await runnerExecutable(state.pid)
+    if (!executable || basename(executable) !== 'hapi') return null
+    const path = relative(await fs.realpath(prefix), executable)
+    return path.startsWith('lib/node_modules/@twsxtd/') || /^builds\/[a-f0-9]{64}\/hapi$/.test(path) ? executable : null
+}
+
+async function stopManagedRunner(hapiHome, state, executable) {
+    const current = await runningRunner(hapiHome)
+    if (current?.pid !== state.pid || await runnerExecutable(state.pid) !== executable ||
+        !Number.isInteger(state.httpPort) || state.httpPort < 1 || state.httpPort > 65535) {
+        throw new Error('The active Runner changed during setup. Copy a fresh command and retry.')
+    }
+    const response = await fetch('http://127.0.0.1:' + state.httpPort + '/stop', {
+        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000)
+    })
+    if (!response.ok || (await response.json()).status !== 'stopping') {
+        throw new Error('The old Runner declined a graceful stop.')
+    }
+    const deadline = Date.now() + 15_000
+    while (Date.now() < deadline) {
+        if (!await runningRunner(hapiHome)) return
+        await delay(200)
+    }
+    throw new Error('The old Runner did not stop gracefully. Setup did not force it to stop.')
+}
+
+async function startAndVerify(runner, context, flags = [], custom = false) {
+    const { hapiHome, hub, jwt, env, settingsPath } = context
+    if (await runningRunner(hapiHome)) throw new Error('Another Runner started while setup was in progress.')
+    await run(runner, ['runner', 'start', ...flags], env, 20_000)
+
+    const deadline = Date.now() + 45_000
+    while (Date.now() < deadline) {
+        const started = await runningRunner(hapiHome)
+        const { machineId } = await readSettings(settingsPath)
+        const machine = await onlineMachine(hub, jwt, machineId, started?.pid)
+        if (machine && (!custom || supportsAgentUpdates(machine))) return
+        await delay(1000)
+    }
+    throw new Error('The Runner did not register with the expected capabilities. Check ' + join(hapiHome, 'logs') + ' for details.')
+}
+
+async function replaceManagedRunner(runner, previous, state, context, activate) {
+    const args = state.startedWithArgv
+    if (!Array.isArray(args) || args[0] !== 'runner' || args[1] !== 'start-sync') {
+        throw new Error('Could not preserve the existing Runner’s start options.')
+    }
+    const flags = args.slice(2)
+    const { hapiHome, settingsPath, accessToken } = context
+    const settings = await readSettings(settingsPath)
+    if (settings.machineId !== state.startedWithMachineId || typeof settings.cliApiToken !== 'string' ||
+        settings.cliApiToken.replace(/:default$/, '') !== accessToken.replace(/:default$/, '')) {
+        throw new Error('The active Runner’s saved Hub credentials differ from this setup command.')
+    }
+
+    console.log('Switching the existing Runner to the custom build…')
+    await stopManagedRunner(hapiHome, state, previous)
+    try {
+        await startAndVerify(runner, context, flags, true)
+        await activate()
+    } catch (error) {
+        try {
+            const replacement = await runningRunner(hapiHome)
+            if (replacement && await runnerExecutable(replacement.pid) === runner) {
+                await stopManagedRunner(hapiHome, replacement, runner)
+            }
+            await startAndVerify(previous, context, flags)
+        } catch {
+            throw new Error(error.message + ' The previous Runner could not be restarted automatically.')
+        }
+        throw new Error(error.message + ' The previous Runner was restored.')
+    }
+}
+
 async function main() {
     if (!['darwin', 'linux'].includes(process.platform)) throw new Error('Use this command on macOS or Linux.')
     if (Number(process.versions.node.split('.')[0]) < 18) throw new Error('Node.js 18 or newer and npm are required.')
@@ -258,8 +424,11 @@ async function main() {
     const env = { ...process.env, HAPI_HOME: hapiHome }
     delete env.CLI_API_TOKEN
     delete env.HAPI_API_URL
+    delete env.HAPI_CLI_EXECUTABLE
+    delete env.HAPI_RUNNER_HANDOFF_FROM_PID
 
     const settingsPath = join(hapiHome, 'settings.json')
+    const prefix = join(hapiHome, 'runner-cli')
     checkExistingHub(await readSettings(settingsPath), hub)
     await fs.mkdir(hapiHome, { recursive: true, mode: 0o700 })
     await exclusive(join(hapiHome, 'runner-enrollment.lock'), async () => {
@@ -269,35 +438,37 @@ async function main() {
         if (running?.startedWithApiUrl && running.startedWithApiUrl !== hub) {
             throw new Error('A HAPI runner is already active for another Hub. Use a separate HAPI_HOME to add this device.')
         }
-        const runner = running ? null : await installRunner(hapiHome, hub, env)
         const { accessToken, jwt } = await authenticate(hub, code)
+        const context = { hapiHome, hub, jwt, env, settingsPath, accessToken }
+        const { appVersion, capabilities } = await hubHealth(hub)
+        const custom = capabilities?.customLinuxX64Runner === true && process.platform === 'linux' &&
+            process.arch === 'x64' && Boolean(process.report?.getReport().header.glibcVersionRuntime)
 
         if (running) {
-            if (await machineIsOnline(hub, jwt, running.startedWithMachineId ?? settings.machineId, running.pid)) {
+            const machine = await onlineMachine(hub, jwt, running.startedWithMachineId ?? settings.machineId, running.pid)
+            if (!machine) throw new Error('A HAPI Runner is already active in this profile. Check its Hub before retrying.')
+            if (!custom || supportsAgentUpdates(machine)) {
                 console.log('This HAPI device is already online.')
                 return
             }
-            throw new Error('A HAPI runner is already active in this profile. Use a separate HAPI_HOME to add this device.')
-        }
-
-        await saveSettings(hapiHome, settingsPath, hub, accessToken)
-        if (await runningRunner(hapiHome)) {
-            throw new Error('A HAPI runner has started in this profile. Check the device from the Hub before retrying.')
-        }
-        await run(runner, ['runner', 'start'], env, 20_000)
-
-        const deadline = Date.now() + 45_000
-        while (Date.now() < deadline) {
-            const startedRunner = await runningRunner(hapiHome)
-            const { machineId } = await readSettings(settingsPath)
-            if (startedRunner?.pid && await machineIsOnline(hub, jwt, machineId, startedRunner.pid)) {
-                console.log('HAPI device connected. It is now online in the Devices page.')
-                console.log(`HAPI CLI: ${runner}`)
-                return
+            const previous = await managedExecutable(prefix, running)
+            if (!previous) {
+                throw new Error('An unmanaged HAPI Runner is active. Stop it normally before installing the custom build.')
             }
-            await delay(1000)
+            const runner = await installCustomRunner(prefix, hub, jwt, appVersion)
+            await replaceManagedRunner(runner, previous, running, context, () => activateCustomRunner(prefix, runner))
+        } else {
+            const runner = custom
+                ? await installCustomRunner(prefix, hub, jwt, appVersion)
+                : await installNpmRunner(prefix, appVersion, env)
+            await saveSettings(hapiHome, settingsPath, hub, accessToken)
+            await startAndVerify(runner, context, [], custom)
+            if (custom) await activateCustomRunner(prefix, runner)
         }
-        throw new Error(`The runner started but the Hub did not report it online. Check ${join(hapiHome, 'logs')} for details.`)
+
+        console.log('HAPI device connected. It is now online in the Devices page.')
+        if (custom) console.log('Remote Agent updates are available on this device.')
+        console.log('HAPI CLI: ' + join(prefix, 'bin', 'hapi'))
     })
 }
 

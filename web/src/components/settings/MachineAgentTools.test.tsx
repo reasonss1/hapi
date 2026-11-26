@@ -69,7 +69,7 @@ describe('MachineAgentTools', () => {
     it('shows the runner version and explains the one-time bootstrap for older runners', () => {
         renderTools({ supported: false })
         expect(screen.getByText('HAPI runner 0.36.0')).toBeTruthy()
-        expect(screen.getByText('Update HAPI on this device once to enable remote agent updates.')).toBeTruthy()
+        expect(screen.getByText('This Runner lacks remote agent updates. If your platform has a custom HAPI build with this capability, install it using “Add new device”.')).toBeTruthy()
         expect(getTools).not.toHaveBeenCalled()
         expect(screen.queryByRole('button', { name: 'Check for updates' })).toBeNull()
     })

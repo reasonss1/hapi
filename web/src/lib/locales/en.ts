@@ -1468,7 +1468,7 @@ export default {
   'settings.machines.deleteError': 'Could not delete this machine.',
   'settings.machines.source': 'View source',
   'settings.machines.tools.runnerVersion': 'HAPI runner {version}',
-  'settings.machines.tools.runnerRequired': 'Update HAPI on this device once to enable remote agent updates.',
+  'settings.machines.tools.runnerRequired': 'This Runner lacks remote agent updates. If your platform has a custom HAPI build with this capability, install it using “{addDevice}”.',
   'settings.machines.tools.title': 'Agents',
   'settings.machines.tools.check': 'Check for updates',
   'settings.machines.tools.checking': 'Checking…',

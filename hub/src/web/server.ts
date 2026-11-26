@@ -31,6 +31,7 @@ import { createPermissionsRoutes } from './routes/permissions'
 import { createPluginRoutes } from './routes/plugins'
 import { createMachinesRoutes } from './routes/machines'
 import { createRunnerEnrollmentRoutes } from './routes/runnerEnrollment'
+import { createRunnerBuildRoutes, resolveRunnerBuildPath } from './routes/runnerBuilds'
 import { createStorageRoutes } from './routes/storage'
 import { createUsageRoutes } from './routes/usage'
 import { createActivityRoutes } from './routes/activity'
@@ -316,6 +317,7 @@ export function createWebApp(options: {
     app.use('*', logger())
 
     const configuration = getConfiguration()
+    const runnerBuildPath = resolveRunnerBuildPath()
     const corsOrigins = options.corsOrigins ?? configuration.corsOrigins
     const corsOriginOption = corsOrigins.includes('*') ? '*' : corsOrigins
     const corsMiddleware = cors({
@@ -363,6 +365,7 @@ export function createWebApp(options: {
         appVersion: APP_VERSION,
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {
+            customLinuxX64Runner: runnerBuildPath !== null,
             workGraph: true,
             titleSuggestion: readTitleProviderConfig() !== null
         }
@@ -384,6 +387,7 @@ export function createWebApp(options: {
     app.route('/api', createPasskeyLoginRoutes(passkeyDeps))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
+    app.route('/api', createRunnerBuildRoutes(runnerBuildPath))
     app.route('/api', createFeaturesRoutes())
     app.route('/api', createPasskeyManagementRoutes(passkeyDeps))
     app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine, options.getVisibilityTracker))

@@ -1352,6 +1352,7 @@ export default {
   'settings.machines.enrollment.generateFailed': 'コマンドを準備できませんでした。コピーボタンを選択してやり直してください。',
   'settings.machines.enrollment.insecureHub': 'デバイスを追加するには、この Hub を HTTPS で開いてください。',
   'settings.machines.enrollment.expired': '接続コードの有効期限が切れました。コピーボタンから新しいコードを作成してください。',
+  'settings.machines.tools.runnerRequired': 'この Runner ではエージェントをリモートで更新できません。お使いのプラットフォーム向けにこの機能を備えたカスタム版 HAPI がある場合は、「{addDevice}」からインストールしてください。',
   'settings.machines.rename': '{name} の名前を変更',
   'settings.machines.namePlaceholder': 'ホスト名を使用',
   'settings.machines.empty': 'オンラインのマシンはありません。',
