@@ -3,7 +3,7 @@ const { createHash, randomUUID } = require('node:crypto')
 const { createReadStream, createWriteStream } = require('node:fs')
 const fs = require('node:fs/promises')
 const { homedir } = require('node:os')
-const { basename, dirname, join, relative, resolve } = require('node:path')
+const { basename, join, relative, resolve } = require('node:path')
 const { Readable, Transform } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 const { setTimeout: delay } = require('node:timers/promises')
@@ -180,7 +180,15 @@ async function request(hub, path, body, jwt) {
     return await response.json()
 }
 
-async function authenticate(hub, code) {
+async function authenticate(hub, code, ...savedTokens) {
+    for (const savedToken of new Set(savedTokens.filter(token => typeof token === 'string' && token))) {
+        try {
+            const { token: jwt } = await request(hub, '/api/auth', { accessToken: savedToken })
+            if (typeof jwt === 'string' && jwt) return { accessToken: savedToken, jwt }
+        } catch {
+            // A fresh pairing code can recover expired saved credentials.
+        }
+    }
     let accessToken
     if (code) {
         try {
@@ -337,12 +345,19 @@ async function runnerExecutable(pid) {
     }
 }
 
-async function managedExecutable(prefix, state) {
+async function restartableExecutable(state) {
     if (!state?.pid || state.startedWithVersionHandoffDisabled) return null
     const executable = await runnerExecutable(state.pid)
     if (!executable || basename(executable) !== 'hapi') return null
-    const path = relative(await fs.realpath(prefix), executable)
-    return path.startsWith('lib/node_modules/@twsxtd/') || /^builds\/[a-f0-9]{64}\/hapi$/.test(path) ? executable : null
+    // Existing devices may use a global package or a manually installed binary.
+    // Reuse the executable of the verified live Runner, without installing a build.
+    try {
+        await fs.access(executable, require('node:fs').constants.X_OK)
+        return executable
+    } catch (error) {
+        if (error.code === 'ENOENT') return null
+        throw error
+    }
 }
 
 async function stopManagedRunner(hapiHome, state, executable) {
@@ -375,13 +390,29 @@ async function startAndVerify(runner, context, flags = [], custom = false) {
         const started = await runningRunner(hapiHome)
         const { machineId } = await readSettings(settingsPath)
         const machine = await onlineMachine(hub, jwt, machineId, started?.pid)
-        if (machine && (!custom || supportsAgentUpdates(machine))) return
+        const roots = workspaceRootsFromFlags(flags)
+        if (machine && (!custom || supportsAgentUpdates(machine)) &&
+            roots.every(root => machine.metadata?.workspaceRoots?.includes(root))) return
         await delay(1000)
     }
     throw new Error('The Runner did not register with the expected capabilities. Check ' + join(hapiHome, 'logs') + ' for details.')
 }
 
-async function replaceManagedRunner(runner, previous, state, context, activate) {
+async function savePrivateJson(path, value) {
+    const temp = `${path}.${randomUUID()}.tmp`
+    try {
+        await fs.writeFile(temp, JSON.stringify(value) + '\n', { flag: 'wx', mode: 0o600 })
+        await fs.rename(temp, path)
+    } finally {
+        await fs.rm(temp, { force: true })
+    }
+}
+
+async function saveWorkspaceFlags(path, flags) {
+    return savePrivateJson(path, { flags })
+}
+
+async function addWorkspaceToRunner(runner, state, context, directory, roots) {
     const args = state.startedWithArgv
     if (!Array.isArray(args) || args[0] !== 'runner' || args[1] !== 'start-sync') {
         throw new Error('Could not preserve the existing Runner’s start options.')
@@ -394,22 +425,53 @@ async function replaceManagedRunner(runner, previous, state, context, activate) 
         throw new Error('The active Runner’s saved Hub credentials differ from this setup command.')
     }
 
-    console.log('Switching the existing Runner to the custom build…')
-    await stopManagedRunner(hapiHome, state, previous)
+    const nextFlags = workspaceFlags(flags, directory, roots)
+    console.log('Adding workspace directory: ' + directory)
+    await stopManagedRunner(hapiHome, state, runner)
     try {
-        await startAndVerify(runner, context, flags, true)
-        await activate()
+        await startAndVerify(runner, context, nextFlags)
     } catch (error) {
         try {
             const replacement = await runningRunner(hapiHome)
             if (replacement && await runnerExecutable(replacement.pid) === runner) {
                 await stopManagedRunner(hapiHome, replacement, runner)
             }
-            await startAndVerify(previous, context, flags)
+            await startAndVerify(runner, context, flags)
         } catch {
             throw new Error(error.message + ' The previous Runner could not be restarted automatically.')
         }
         throw new Error(error.message + ' The previous Runner was restored.')
+    }
+    return nextFlags
+}
+
+function workspaceRootsFromFlags(flags) {
+    const roots = []
+    for (let i = 0; i < flags.length; i += 1) {
+        if (flags[i] === '--workspace-root') roots.push(flags[++i])
+        else if (flags[i].startsWith('--workspace-root=')) roots.push(flags[i].slice('--workspace-root='.length))
+    }
+    return roots
+}
+
+function workspaceFlags(flags, directory, roots = []) {
+    const result = [...flags]
+    for (const root of [...roots, directory]) {
+        const inFlags = result.some((flag, index) => flag === '--workspace-root'
+            ? result[index + 1] === root : flag === '--workspace-root=' + root)
+        if (!inFlags) result.push('--workspace-root', root)
+    }
+    return result
+}
+
+async function installedRunner(prefix) {
+    const runner = join(prefix, 'bin', 'hapi')
+    try {
+        await fs.access(runner, require('node:fs').constants.X_OK)
+        return runner
+    } catch (error) {
+        if (error.code === 'ENOENT') return null
+        throw error
     }
 }
 
@@ -419,7 +481,6 @@ async function main() {
     const [url, code] = process.argv.slice(2)
     if (!url) throw new Error('Provide the HAPI Hub URL. Copy the command from the HAPI Devices page.')
     const hub = hubOrigin(url)
-    if (!code && !process.stdin.isTTY) throw new Error('Run this command in a terminal to enter the Hub access token.')
     const hapiHome = resolve(process.env.HAPI_HOME?.replace(/^~/, homedir()) || join(homedir(), '.hapi'))
     const env = { ...process.env, HAPI_HOME: hapiHome }
     delete env.CLI_API_TOKEN
@@ -427,48 +488,83 @@ async function main() {
     delete env.HAPI_CLI_EXECUTABLE
     delete env.HAPI_RUNNER_HANDOFF_FROM_PID
 
+    const directory = await fs.realpath(process.cwd())
     const settingsPath = join(hapiHome, 'settings.json')
     const prefix = join(hapiHome, 'runner-cli')
+    const workspacePath = join(hapiHome, 'runner-enrollment.json')
+    const authPath = join(hapiHome, 'runner-enrollment-auth.json')
     checkExistingHub(await readSettings(settingsPath), hub)
     await fs.mkdir(hapiHome, { recursive: true, mode: 0o700 })
     await exclusive(join(hapiHome, 'runner-enrollment.lock'), async () => {
         const settings = await readSettings(settingsPath)
         checkExistingHub(settings, hub)
+        const saved = await readSettings(workspacePath)
+        if (saved.flags !== undefined && (!Array.isArray(saved.flags) || saved.flags.some(flag => typeof flag !== 'string'))) {
+            throw new Error('Invalid saved Runner workspace options: ' + workspacePath)
+        }
         const running = await runningRunner(hapiHome)
         if (running?.startedWithApiUrl && running.startedWithApiUrl !== hub) {
             throw new Error('A HAPI runner is already active for another Hub. Use a separate HAPI_HOME to add this device.')
         }
-        const { accessToken, jwt } = await authenticate(hub, code)
+        const cached = await readSettings(authPath)
+        const { accessToken, jwt } = await authenticate(hub, code, settings.cliApiToken, cached.hub === hub ? cached.accessToken : undefined)
+        checkExistingHub(settings, hub, accessToken)
+        // Redemption consumes a code. Retain credentials before installation/restart
+        // so a later setup failure can be retried without redeeming the code again.
+        if (settings.cliApiToken !== accessToken) await savePrivateJson(authPath, { hub, accessToken })
         const context = { hapiHome, hub, jwt, env, settingsPath, accessToken }
-        const { appVersion, capabilities } = await hubHealth(hub)
-        const custom = capabilities?.customLinuxX64Runner === true && process.platform === 'linux' &&
-            process.arch === 'x64' && Boolean(process.report?.getReport().header.glibcVersionRuntime)
 
         if (running) {
             const machine = await onlineMachine(hub, jwt, running.startedWithMachineId ?? settings.machineId, running.pid)
             if (!machine) throw new Error('A HAPI Runner is already active in this profile. Check its Hub before retrying.')
-            if (!custom || supportsAgentUpdates(machine)) {
-                console.log('This HAPI device is already online.')
-                return
+            const roots = machine.metadata?.workspaceRoots ?? []
+            for (const root of roots) {
+                if (await fs.realpath(root).catch(() => root) === directory) {
+                    const args = running.startedWithArgv
+                    if (Array.isArray(args) && args[0] === 'runner' && args[1] === 'start-sync') {
+                        await saveWorkspaceFlags(workspacePath, workspaceFlags(args.slice(2), directory, roots))
+                    }
+                    console.log('This workspace directory is already connected: ' + directory)
+                    return
+                }
             }
-            const previous = await managedExecutable(prefix, running)
-            if (!previous) {
-                throw new Error('An unmanaged HAPI Runner is active. Stop it normally before installing the custom build.')
+            const runner = machine.metadata?.supervisedRestart ? null : await restartableExecutable(running)
+            if (!runner) {
+                throw new Error('This Runner is supervised or cannot be restarted safely. Add --workspace-root ' + JSON.stringify(directory) + ' to its existing service/start command, preserving the other workspace roots, and restart it through that service.')
             }
-            const runner = await installCustomRunner(prefix, hub, jwt, appVersion)
-            await replaceManagedRunner(runner, previous, running, context, () => activateCustomRunner(prefix, runner))
+            const flags = await addWorkspaceToRunner(runner, running, context, directory, roots)
+            await saveWorkspaceFlags(workspacePath, flags)
         } else {
-            const runner = custom
-                ? await installCustomRunner(prefix, hub, jwt, appVersion)
-                : await installNpmRunner(prefix, appVersion, env)
+            // Setup adds directories; upgrading an existing installation is a separate action.
+            let runner = await installedRunner(prefix)
+            let custom = false
+            if (!runner) {
+                const { appVersion, capabilities } = await hubHealth(hub)
+                custom = capabilities?.customLinuxX64Runner === true && process.platform === 'linux' &&
+                    process.arch === 'x64' && Boolean(process.report?.getReport().header.glibcVersionRuntime)
+                runner = custom
+                    ? await installCustomRunner(prefix, hub, jwt, appVersion)
+                    : await installNpmRunner(prefix, appVersion, env)
+            }
+            const previous = JSON.parse(await readOptionalFile(join(hapiHome, 'runner.state.json')) || 'null')
+            const args = previous?.startedWithArgv
+            const flags = Array.isArray(args) && args[0] === 'runner' && args[1] === 'start-sync' ? args.slice(2) : saved.flags ?? []
             await saveSettings(hapiHome, settingsPath, hub, accessToken)
-            await startAndVerify(runner, context, [], custom)
+            // Older installers did not persist options after a graceful stop.
+            let roots = []
+            if (settings.machineId) {
+                const { machines } = await request(hub, '/api/machines?includeOffline=true', undefined, jwt)
+                roots = machines.find(machine => machine.id === settings.machineId)?.metadata?.workspaceRoots ?? []
+            }
+            const nextFlags = workspaceFlags(flags, directory, roots)
+            await startAndVerify(runner, context, nextFlags, custom)
+            await saveWorkspaceFlags(workspacePath, nextFlags)
             if (custom) await activateCustomRunner(prefix, runner)
         }
 
         console.log('HAPI device connected. It is now online in the Devices page.')
-        if (custom) console.log('Remote Agent updates are available on this device.')
-        console.log('HAPI CLI: ' + join(prefix, 'bin', 'hapi'))
+        console.log('Workspace directory: ' + directory)
+        console.log('Workspace registered without upgrading the installed HAPI version.')
     })
 }
 

@@ -149,6 +149,18 @@ describe('SettingsMachinesPage', () => {
         expect(screen.getByText('HAPI runner 1.0.0')).toBeTruthy()
     })
 
+    it('shows performance and registered work directories on each device row', () => {
+        machinesMock.mockReturnValue([makeMachine({
+            health: { collectedAt: Date.now(), cpuCount: 8, cpuPercent: 25, memoryPercent: 60 },
+            metadata: { host: 'workstation.local', platform: 'linux', happyCliVersion: '1.0.0', workspaceRoots: ['/projects/first', '/projects/second'] },
+        })])
+        renderPage()
+
+        expect(screen.getByRole('meter', { name: 'CPU' }).getAttribute('aria-valuenow')).toBe('25')
+        expect(screen.getByText('/projects/first')).toBeTruthy()
+        expect(screen.getByText('/projects/second')).toBeTruthy()
+    })
+
     it('shows the custom name while keeping the hostname visible', () => {
         machinesMock.mockReturnValue([makeMachine({
             metadata: { host: 'workstation.local', platform: 'linux', happyCliVersion: '1.0.0', displayName: 'Workstation' },

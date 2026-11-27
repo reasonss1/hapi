@@ -9,6 +9,7 @@ import { useMachineManagement, type ManagedMachine } from '@/hooks/queries/useMa
 import { forgetMachineLabel, getMachineTitle } from '@/hooks/useMachineLabels'
 import { forgetSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { queryKeys } from '@/lib/query-keys'
+import { MachineDetails } from '@/components/settings/MachineDetails'
 import { MachineAgentTools } from '@/components/settings/MachineAgentTools'
 import { RunnerEnrollment } from '@/components/settings/RunnerEnrollment'
 import { SettingsPageContent, SettingsSection } from '@/components/settings/SettingsPrimitives'
@@ -153,6 +154,7 @@ function MachineRow(props: { api: ApiClient | null; machine: ManagedMachine }) {
                     {t('settings.machines.delete')}
                 </button>
             </div>
+            {!props.machine.sessionOnly ? <MachineDetails machine={props.machine} /> : null}
             {!props.machine.sessionOnly ? <MachineAgentTools api={props.api} machine={props.machine} /> : null}
             {error ? <div role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</div> : null}
             <ConfirmDialog
