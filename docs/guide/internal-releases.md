@@ -18,4 +18,16 @@ After activation, verify that the device is online, advertises `agent-tool-updat
 
 ## Build a new internal release
 
-Push the tested source commit to the personal fork, then push an `internal-*` tag pointing to that commit. `.github/workflows/internal-release.yml` builds and smoke-tests the Linux x64 executable, packages it with hashes and source metadata, and publishes a prerelease in the same fork. The workflow does not publish npm packages or update Homebrew. Keep tags immutable; use a new tag for each source revision.
+Every release must have a strictly newer numeric HAPI version, including installer hotfixes and releases that change only the Hub or Runner. Increment the patch version for fixes. The first version after the legacy `0.36.5` builds can be `0.36.6`.
+
+From the repository root, use the existing version helper, refresh the lockfile, then validate against the versions running on the deployment targets. For example, to release `0.36.6` when the latest deployed version is `0.36.5`:
+
+```sh
+bun -e 'import { updateReleaseVersions } from "./cli/scripts/release-version.ts"; updateReleaseVersions(process.cwd(), "0.36.6")'
+bun install --lockfile-only
+bun scripts/check-internal-release-version.mjs internal-v0.36.6 0.36.5
+```
+
+Commit the code and version changes together. Push the tested commit and an immutable `internal-v<version>` tag to the personal fork. CI requires the tag, CLI version and shared version to agree, and the version to be newer than earlier internal tags. It builds and smoke-tests the Linux x64 executable, packages it with the commit and hashes, and publishes a prerelease in the same fork. For manual Hub or Runner deployments, run the same version check before building and package the exact Git commit that passed it.
+
+Activate the build on the Hub and each target Runner using the release manifest for that commit. Compare the reported version and executable hash after each activation. If an already published release needs a fix, increment the version again and create a new tag.

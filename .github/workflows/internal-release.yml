@@ -3,11 +3,11 @@ name: Internal Release
 on:
     push:
         tags:
-            - 'internal-*'
+            - 'internal-v*'
     workflow_dispatch:
         inputs:
             tag:
-                description: Existing internal-* tag to build and release
+                description: Existing internal-vMAJOR.MINOR.PATCH tag to build and release
                 required: true
                 type: string
 
@@ -15,7 +15,7 @@ permissions:
     contents: read
 
 concurrency:
-    group: internal-release-${{ inputs.tag || github.ref_name }}
+    group: internal-release
     cancel-in-progress: false
 
 jobs:
@@ -42,8 +42,8 @@ jobs:
                       [[ "$GITHUB_REF_TYPE" == tag ]]
                       tag="$GITHUB_REF_NAME"
                   fi
-                  if [[ ! "$tag" =~ ^internal-[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-                      echo '::error::Expected an internal-* tag with only letters, digits, dots, underscores and hyphens.'
+                  if [[ ! "$tag" =~ ^internal-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                      echo '::error::Expected an internal-vMAJOR.MINOR.PATCH tag.'
                       exit 1
                   fi
                   printf 'tag=%s\nref=refs/tags/%s\n' "$tag" "$tag" >> "$GITHUB_OUTPUT"
@@ -71,12 +71,20 @@ jobs:
                       exit 1
                   fi
                   printf 'SOURCE_SHA=%s\nRELEASE_TAG=%s\n' "$source_sha" "$RELEASE_TAG" >> "$GITHUB_ENV"
+            - name: Verify incremented release version
+              run: bun scripts/check-internal-release-version.mjs "$RELEASE_TAG"
             - run: bun install --frozen-lockfile
             - run: bun run typecheck
             - run: bun run build:single-exe
             - name: Smoke test Linux x64 executable
               run: |
-                  cli/dist-exe/bun-linux-x64-baseline/hapi --version
+                  reported="$(cli/dist-exe/bun-linux-x64-baseline/hapi --version)"
+                  expected="hapi version: ${RELEASE_TAG#internal-v}"
+                  if [[ "$reported" != "$expected" ]]; then
+                      echo "::error::Expected '$expected', executable reports '$reported'."
+                      exit 1
+                  fi
+                  echo "$reported"
                   cli/dist-exe/bun-linux-x64-baseline/hapi --help
             - name: Smoke test compiled Hub startup and authentication
               run: |

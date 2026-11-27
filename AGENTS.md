@@ -10,6 +10,7 @@ CLI wraps agents → hub (Socket.IO) → web/native clients (REST + SSE).
 - Make reasonable, reversible choices and continue. Ask when missing information materially affects correctness, an action needs additional authorization, or progress requires overwriting someone else's changes. Continue unaffected work.
 - Preserve existing user/agent changes. Editing or generating files does not imply permission to commit, push, or release.
 - Keep communication concise and clear; report results, checks performed, and remaining limitations.
+- Every HAPI release, including a Hub-only fix, static installer hotfix, or Runner-only fix, must increment the numeric HAPI version before building for deployment. Commit the version and code together, use one immutable tag per version, and build Hub and Runner artifacts for that release from the same commit. Verify the version on each target after activation. See [internal releases](docs/guide/internal-releases.md) for the checks.
 
 ## Find context when needed
 
