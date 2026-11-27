@@ -15,7 +15,7 @@ import { asyncQuestionsForItem } from './asyncQuestions';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { PluginManager } from '@/plugins/manager';
 
-const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
+const state = vi.hoisted(() => ({ home: '', apiUrl: 'http://mock-hub', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
 const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
 class MockSession extends EventEmitter {
     readonly sessionId = randomUUID();
@@ -39,7 +39,7 @@ class MockSession extends EventEmitter {
     syncNativeQueuedMessage() {}
     sendSessionDeath() { this.dead = true; } async flush() {} close() {} isPending() { return false; }
 }
-vi.mock('@/configuration', () => ({ resolveHapiHomeDir: () => state.home, configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'http://mock-hub', cliApiToken: 'test' } }));
+vi.mock('@/configuration', () => ({ resolveHapiHomeDir: () => state.home, configuration: { get happyHomeDir() { return state.home; }, get apiUrl() { return state.apiUrl; }, cliApiToken: 'test' } }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: (...args: unknown[]) => { if (process.env.HAPI_DEBUG_SHARED_TEST) console.log(...args); }, warn: vi.fn(), info: vi.fn(), debugLargeJson: vi.fn() } }));
 vi.mock('@/agent/sessionFactory', () => ({ bootstrapSession: async (options: { workingDirectory: string; metadataOverrides: Partial<Metadata> }) => {
     await state.beforeBootstrap?.();
@@ -55,7 +55,7 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => 
 
 // Explicit opt-in: installed official binary, entirely isolated CODEX_HOME, mock Responses API only.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Codex shared runtime', () => {
-    afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
+    afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; state.apiUrl = 'http://mock-hub'; });
     it('loads a device MCP plugin into a new shared Codex session', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-plugins-'); state.home = home;
         const cwd = join(home, 'work'); await mkdir(cwd);
@@ -96,6 +96,105 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(status.data).toContainEqual(expect.objectContaining({ name: 'hapi-plugin-fixture', tools: expect.objectContaining({ hello: expect.anything() }) }));
         } finally {
             await client?.disconnect(); abort.abort(); await running.catch(() => {});
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 45_000);
+    // Optional real-service check: HAPI_TEST_TODO_MCP_COMMAND points to a To Do stdio server.
+    // The child only lists one task list; no task mutations or model API credentials.
+    it.each([{ forkTurns: 'none', remote: false }, { forkTurns: 'all', remote: false }, { forkTurns: 'none', remote: true }, { forkTurns: 'all', remote: true }] as const)('discovers and calls Todo with fork_turns=$forkTurns, Hub bridge=$remote', async ({ forkTurns, remote }) => {
+        const home = await mkdtemp('/tmp/hapi-child-mcp-'); state.home = home;
+        const cwd = join(home, 'work'); await mkdir(cwd);
+        const ch = join(home, 'codex'); await mkdir(ch);
+        const requests: Record<string, unknown>[] = [];
+        let hubCalls = 0;
+        const http = createServer((request, response) => {
+            const chunks: Buffer[] = [];
+            request.on('data', chunk => chunks.push(Buffer.from(chunk)));
+            request.on('end', () => {
+                if (request.url?.startsWith('/cli/todo-mcp/')) {
+                    expect(request.headers.authorization).toBe('Bearer test');
+                    response.writeHead(200, { 'Content-Type': 'application/json' });
+                    if (request.url.endsWith('/status')) response.end(JSON.stringify({ available: true }));
+                    else if (request.url.endsWith('/tools')) response.end(JSON.stringify({ tools: [{ name: 'list-todo-task-lists', description: 'Central Todo read', inputSchema: { type: 'object' } }] }));
+                    else {
+                        hubCalls++;
+                        expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual({ name: 'list-todo-task-lists', arguments: { top: 1 } });
+                        response.end(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ value: [] }) }] }));
+                    }
+                    return;
+                }
+                const body = record(JSON.parse(Buffer.concat(chunks).toString()));
+                requests.push(body);
+                const id = randomUUID();
+                const childInput = JSON.stringify(body.input);
+                const isChild = Array.isArray(body.input) && body.input.some(item => record(item).type === 'agent_message' && record(item).recipient === '/root/mcp_check');
+                const item = isChild && !childInput.includes('child_tools')
+                    ? { type: 'custom_tool_call', call_id: 'child_tools', name: 'exec', namespace: 'functions', input: `const tool = ALL_TOOLS.find(t => /todo/i.test(t.name) && t.name.endsWith('list_todo_task_lists')); if (!tool) throw new Error('Missing child MCP tool: ' + ALL_TOOLS.map(t => t.name).join(',')); const result = await tools[tool.name]({ top: 1 }); if (result.isError) throw new Error('MCP read failed: ' + JSON.stringify(result)); const data = JSON.parse(result.content.find(c => c.type === 'text').text); if (!Array.isArray(data.value)) throw new Error('Invalid task list response'); text('CHILD_MCP_READ_OK');` }
+                    : requests.length === 1
+                    ? { type: 'function_call', call_id: 'spawn_fixture', name: 'spawn_agent', namespace: 'collaboration', arguments: JSON.stringify({ message: 'CHILD MCP CHECK', task_name: 'mcp_check', fork_turns: forkTurns }) }
+                    : { type: 'message', role: 'assistant', id: `msg_${id}`, content: [{ type: 'output_text', text: 'DONE' }] };
+                response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                response.end([{ type: 'response.created', response: { id } }, { type: 'response.output_item.done', item },
+                    { type: 'response.completed', response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }]
+                    .map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+            });
+        });
+        await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+        const port = (http.address() as { port: number }).port;
+        await writeFile(join(ch, 'config.toml'), `model = "gpt-6.1-sol"
+model_provider = "mock"
+approval_policy = "never"
+sandbox_mode = "read-only"
+[features]
+multi_agent = true
+[model_providers.mock]
+name = "Isolated mock"
+base_url = "http://127.0.0.1:${port}/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+request_max_retries = 0
+stream_max_retries = 0
+[analytics]
+enabled = false
+[feedback]
+enabled = false
+[projects."${cwd}"]
+trust_level = "trusted"
+`);
+        vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HAPI_ENABLE_PLUGIN_MANAGEMENT', remote ? '0' : '1');
+        if (remote) {
+            state.apiUrl = `http://127.0.0.1:${port}`;
+            vi.stubEnv('HAPI_API_URL', state.apiUrl);
+            vi.stubEnv('CLI_API_TOKEN', 'test');
+            vi.stubEnv('HAPI_HOME', home);
+        }
+        const fixture = join(home, 'tool.cjs');
+        await writeFile(fixture, `require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+            const { id, method, params } = JSON.parse(line); if (id === undefined) return;
+            const result = method === 'initialize' ? { protocolVersion: params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+                : method === 'tools/list' ? { tools: [{ name: 'list_todo_task_lists', description: 'List test task lists', inputSchema: { type: 'object' } }] } : { content: [{ type: 'text', text: JSON.stringify({ value: [{ id: 'fixture', displayName: 'Test list' }] }) }] };
+            setTimeout(() => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n'), method === 'tools/list' ? 1500 : 0);
+        });`);
+        if (!remote) expect((await new PluginManager(home, 'test').manage({ action: 'addMcp', agent: 'codex', entry: {
+            name: 'microsoft-todo', enabled: true, config: { transport: 'stdio', command: process.env.HAPI_TEST_TODO_MCP_COMMAND ?? process.execPath, args: process.env.HAPI_TEST_TODO_MCP_COMMAND ? [] : [fixture] }
+        } })).ok).toBe(true);
+        const abort = new AbortController();
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const { runSharedRuntime } = await import('./runtime');
+        const running = runSharedRuntime({ workingDirectory: cwd, permissionMode: 'yolo' }, ready, abort.signal);
+        try {
+            const { sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped'); })]);
+            state.sessions.get(sessionId)!.user?.({ content: { text: 'PARENT MCP CHECK' } }, 'parent-check');
+            await vi.waitFor(() => expect(requests.some(body => Array.isArray(body.input) && body.input.some(item => record(item).type === 'custom_tool_call_output'))).toBe(true), { timeout: 20_000 });
+            const child = requests.find(body => Array.isArray(body.input) && body.input.some(item => record(item).type === 'custom_tool_call_output'))!;
+            const output = (child.input as unknown[]).map(record).find(item => item.type === 'custom_tool_call_output');
+            expect(JSON.stringify(output)).toContain('CHILD_MCP_READ_OK');
+            if (remote) expect(hubCalls).toBe(1);
+        } finally {
+            abort.abort(); await running.catch(() => {});
+            await new Promise<void>(resolve => http.close(() => resolve()));
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
     }, 45_000);

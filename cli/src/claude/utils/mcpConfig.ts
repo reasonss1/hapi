@@ -17,7 +17,10 @@ export function resolveMcpConfigArg(
     options?: McpConfigOptions
 ): McpConfigArg {
     const configJson = JSON.stringify({ mcpServers });
-    const useFile = options?.useFile ?? process.platform === 'win32';
+    // The Hub bridge carries the device's HAPI credential in its MCP env.
+    // Keep that value out of Claude's process arguments on every platform.
+    const hubTodo = mcpServers['hapi-todo'] as { env?: { CLI_API_TOKEN?: string } } | undefined;
+    const useFile = Boolean(hubTodo?.env?.CLI_API_TOKEN) || (options?.useFile ?? process.platform === 'win32');
     if (!useFile) {
         return { value: configJson };
     }
@@ -29,7 +32,7 @@ export function resolveMcpConfigArg(
         dir,
         `mcp-config-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
     );
-    writeFileSync(filePath, configJson, "utf8");
+    writeFileSync(filePath, configJson, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
 
     return {
         value: filePath,

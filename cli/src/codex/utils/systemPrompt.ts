@@ -30,12 +30,17 @@ export const TITLE_INSTRUCTION = trimIdent(`
     })}
 `);
 
+/** Device plugins are deferred tools in Codex code mode, including child agents. */
+export const MCP_DISCOVERY_INSTRUCTION = trimIdent(`
+    HAPI's Hub To Do bridge and enabled device MCP plugins are inherited by child agents. When functions.exec is available, discover deferred tools through ALL_TOOLS inside functions.exec before reporting a plugin missing. For Microsoft To Do, search tool names and descriptions for "todo" and prefer the hapi-todo Hub bridge when available, then call the matching method on tools using the exact discovered name and schema. The initial tool list and list_mcp_resources do not enumerate all callable MCP tools. If discovery or a call fails, report the specific failure; an approval denial is different from a missing tool.
+`);
+
 /**
  * The system prompt to inject via developer_instructions in local mode.
  * Session-summary contract is resolved at call time (hub toggle / env).
  */
 export function getCodexSystemPrompt(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(withSessionJobInstruction(TITLE_INSTRUCTION), env)
+    return withSessionSummaryInstruction(withSessionJobInstruction(`${TITLE_INSTRUCTION}\n\n${MCP_DISCOVERY_INSTRUCTION}`), env)
 }
 
 /** Alias kept for existing call sites / tests that expect a string constant name. */

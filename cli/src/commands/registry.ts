@@ -34,6 +34,7 @@ const commandMap = new Map<string, () => Promise<CommandDefinition>>([
     ['pi', async () => (await import('./pi')).piCommand],
     ['mcp', async () => (await import('./mcp')).mcpCommand],
     ['mcp-proxy', async () => (await import('./mcpProxy')).mcpProxyCommand],
+    ['todo-mcp', async () => (await import('./todoMcp')).todoMcpCommand],
     ['hub', async () => (await import('./hub')).hubCommand],
     ['server', async () => ({ ...(await import('./hub')).hubCommand, name: 'server' })],
     ['hook-forwarder', async () => (await import('./hookForwarder')).hookForwarderCommand],

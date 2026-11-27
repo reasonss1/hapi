@@ -373,7 +373,12 @@ export function createWebApp(options: {
         }
     }))
 
-    app.route('/cli', createCliRoutes(options.getSyncEngine))
+    const todoCommand = process.env.HAPI_TODO_MCP_COMMAND?.trim()
+    const todoNamespace = process.env.HAPI_TODO_NAMESPACE?.trim()
+    const todoConfig = todoCommand && todoNamespace
+        ? { namespace: todoNamespace, connector: new TodoMcp(todoCommand), dataDir: configuration.dataDir }
+        : null
+    app.route('/cli', createCliRoutes(options.getSyncEngine, todoConfig))
 
     app.route('/api', createAuthRoutes(options.jwtSecret, options.store))
     app.route('/api', createBindRoutes(options.jwtSecret, options.store))
@@ -397,11 +402,7 @@ export function createWebApp(options: {
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createPluginRoutes(options.getSyncEngine))
-    const todoCommand = process.env.HAPI_TODO_MCP_COMMAND?.trim()
-    const todoNamespace = process.env.HAPI_TODO_NAMESPACE?.trim()
-    app.route('/api/todo', createTodoRoutes(options.store, options.getSyncEngine, todoCommand && todoNamespace
-        ? { namespace: todoNamespace, connector: new TodoMcp(todoCommand), dataDir: configuration.dataDir }
-        : null))
+    app.route('/api/todo', createTodoRoutes(options.store, options.getSyncEngine, todoConfig))
     app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))
     app.route('/api', createStorageRoutes(configuration.dbPath))
     app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine))

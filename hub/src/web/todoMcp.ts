@@ -44,6 +44,9 @@ function parseResult(result: Awaited<ReturnType<Client['callTool']>>) {
 }
 
 type Tool = 'list-todo-task-lists' | 'list-todo-tasks' | 'get-todo-task' | 'update-todo-task'
+export const AGENT_TODO_TOOLS = [
+    'list-todo-task-lists', 'list-todo-tasks', 'get-todo-task',
+] as const
 const timeout = 10_000
 const pageSize = 30
 
@@ -140,6 +143,12 @@ export class TodoMcp {
         if (!isAbsolute(command)) throw new Error('HAPI_TODO_MCP_COMMAND requires an absolute path')
     }
 
+    async close() {
+        const client = this.client
+        this.client = undefined
+        if (client) await (await client.catch(() => null))?.close()
+    }
+
     private connect() {
         const client = new Client({ name: 'hapi-todo', version: '1.0.0' })
         const transport = new StdioClientTransport({ command: this.command, stderr: 'ignore' })
@@ -164,6 +173,18 @@ export class TodoMcp {
             await client.close().catch(() => undefined)
             throw new TodoMcpError('todo_unavailable')
         }
+    }
+
+    async listAgentTools() {
+        const client = await (this.client ?? this.connect())
+        const result = await client.listTools(undefined, { timeout })
+        return { tools: result.tools.filter(tool => AGENT_TODO_TOOLS.some(name => name === tool.name)) }
+    }
+
+    async callAgentTool(tool: typeof AGENT_TODO_TOOLS[number], args: Record<string, unknown>) {
+        if (!AGENT_TODO_TOOLS.includes(tool)) throw new TodoMcpError('todo_unavailable')
+        const client = await (this.client ?? this.connect())
+        return client.callTool({ name: tool, arguments: args }, undefined, { timeout })
     }
 
     listLists() {

@@ -22,6 +22,7 @@ import { parseAccessToken } from '../../utils/accessToken'
 import { acceptsGzip } from '../sseCompression'
 import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
 import { SessionIdentityConflictError, SessionNotAdoptableError } from '../../store/sessions'
+import { createTodoAgentRoutes, type TodoAgentConfig } from './todoAgent'
 
 const bearerSchema = z.string().regex(/^Bearer\s+(.+)$/i)
 
@@ -75,7 +76,7 @@ function clearErrorStatus(code: string): 403 | 404 | 409 | 500 {
                 : 500
 }
 
-export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<CliEnv> {
+export function createCliRoutes(getSyncEngine: () => SyncEngine | null, todo: TodoAgentConfig | null = null): Hono<CliEnv> {
     const app = new Hono<CliEnv>()
     app.onError((error, c) => {
         if (error instanceof MachineDeletionError) {
@@ -123,6 +124,8 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             c.res.headers.set('Vary', `${vary}, Accept-Encoding`)
         }
     })
+
+    app.route('/todo-mcp', createTodoAgentRoutes(todo))
 
     app.post('/sessions', async (c) => {
         const engine = getSyncEngine()

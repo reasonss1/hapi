@@ -55,4 +55,5 @@ describe('Todo MCP reads', () => {
         await expect(connector.listLists()).resolves.toEqual([])
         expect(transport).toHaveBeenCalledTimes(2)
     })
+
 })

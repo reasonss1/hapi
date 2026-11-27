@@ -172,14 +172,19 @@ export function buildMcpServerConfigArgs(
     return configArgs;
 }
 
+// Codex gives optional MCP servers a shared 1s startup grace by default.
+// Device plugins can take longer, especially when each child starts stdio anew.
+// Wait up to each server's startup timeout without making optional plugins required.
 export function buildPluginMcpConfigArgs(servers: Record<string, CodexPluginServer>): string[] {
-    return Object.entries(servers).flatMap(([name, server]) => {
+    if (Object.keys(servers).length === 0) return [];
+    return ['-c', 'mcp_optional_startup_grace_ms=0', ...Object.entries(servers).flatMap(([name, server]) => {
         const quote = (value: string) => `"${escapeTomlString(value)}"`;
         const config = 'url' in server
             ? `{ url = ${quote(server.url)} }`
             : `{ command = ${quote(server.command)}, args = [${server.args.map(quote).join(', ')}] }`;
-        return ['-c', `mcp_servers.${name}=${config}`];
-    });
+        return ['-c', `mcp_servers.${name}=${config}`, ...(server.env_vars
+            ? ['-c', `mcp_servers.${name}.env_vars=[${server.env_vars.map(quote).join(', ')}]`] : [])];
+    })];
 }
 
 /**
