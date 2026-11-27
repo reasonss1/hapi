@@ -84,12 +84,13 @@ describe('MachineAgentTools', () => {
         expect(await screen.findByRole('button', { name: 'Update Codex' })).toBeEnabled()
         expect(getTools).toHaveBeenCalledWith('device-1', true)
         expect(screen.getByText('1.0.0')).toBeTruthy()
-        expect(screen.getByText('Latest 1.1.0')).toBeTruthy()
+        expect(screen.getByText('→ 1.1.0')).toHaveAttribute('title', 'Latest 1.1.0')
         expect(screen.queryByRole('button', { name: 'Update all' })).toBeNull()
         expect(screen.queryByText('Claude Code')).toBeNull()
         expect(screen.queryByRole('button', { name: 'Update Claude Code' })).toBeNull()
         expect(screen.queryByText('Pi')).toBeNull()
-        expect(screen.getByText('Existing sessions keep running. New sessions use the updated version.')).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Update Codex' }))
+            .toHaveAttribute('title', 'Existing sessions keep running. New sessions use the updated version.')
     })
 
     it('keeps Codex visible when checking its version would interrupt a session', async () => {
@@ -97,8 +98,8 @@ describe('MachineAgentTools', () => {
             tool({ installedVersion: null, latestVersion: null, canUpdate: false, reason: 'manual_version' }),
         ]))
         renderTools()
-        expect(await screen.findByText('Codex')).toBeTruthy()
-        expect(screen.getByText('Check this tool’s version on the device.')).toBeTruthy()
+        expect(await screen.findByText('Check this tool’s version on the device.')).toBeTruthy()
+        expect(screen.getByText('Codex')).toBeTruthy()
         expect(screen.queryByRole('button', { name: 'Update Codex' })).toBeNull()
         expect(screen.queryByText('Codex was not detected on this device.')).toBeNull()
     })
@@ -156,8 +157,8 @@ describe('MachineAgentTools', () => {
     it('keeps a detected tool visible when its version probe fails', async () => {
         getTools.mockResolvedValue(response([tool({ installedVersion: null, latestVersion: null, canUpdate: false, reason: 'check_failed' })]))
         renderTools()
-        expect(await screen.findByText('Codex')).toBeTruthy()
-        expect(screen.getByText(en['settings.machines.tools.checkFailed'])).toBeTruthy()
+        expect(await screen.findByText(en['settings.machines.tools.checkFailed'])).toBeTruthy()
+        expect(screen.getByText('Codex')).toBeTruthy()
         expect(screen.queryByText('Codex was not detected on this device.')).toBeNull()
     })
 

@@ -129,7 +129,10 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
         return null
     }
 
-    const message = visibleCodex ? toolMessage(visibleCodex) : null
+    const offline = !machine.active || !isOnline
+    const message = offline
+        ? t('settings.machines.tools.offline')
+        : visibleCodex ? toolMessage(visibleCodex) : query.data ? t('settings.machines.tools.empty') : null
 
     return (
         <div className="mt-2 space-y-2 text-xs">
@@ -142,47 +145,38 @@ export function MachineAgentTools({ api, machine }: { api: ApiClient | null; mac
                 </p>
             ) : (
                 <>
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-medium text-[var(--app-fg)]">{t('settings.machines.tools.title')}</span>
-                        <button type="button" onClick={checkUpdates} disabled={disabled || updating}
-                            className="text-[var(--app-link)] disabled:opacity-50">
-                            {query.isFetching || refreshMutation.isPending
-                                ? t('settings.machines.tools.checking')
-                                : t('settings.machines.tools.check')}
-                        </button>
-                    </div>
-                    <p className="text-[var(--app-hint)]">{t('settings.machines.tools.continuity')}</p>
-                    {!machine.active || !isOnline ? (
-                        <p role="status" className="text-[var(--app-hint)]">{t('settings.machines.tools.offline')}</p>
-                    ) : null}
-                    {visibleCodex ? (
-                        <div className="flex items-start justify-between gap-3 rounded-lg bg-[var(--app-bg)] px-2 py-2">
-                            <div className="min-w-0">
-                                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                                    <span className="font-medium text-[var(--app-fg)]">{visibleCodex.name}</span>
-                                    <span className="text-[var(--app-hint)]">{visibleCodex.installedVersion ?? '—'}</span>
-                                    {visibleCodex.latestVersion && visibleCodex.latestVersion !== visibleCodex.installedVersion ? (
-                                        <span className="text-[var(--app-link)]">{t('settings.machines.tools.available', { version: visibleCodex.latestVersion })}</span>
-                                    ) : null}
-                                </div>
-                                {message ? (
-                                    <p role="status" className={`mt-1 ${visibleCodex.state === 'failed' ? 'text-red-600 dark:text-red-400' : 'text-[var(--app-hint)]'}`}>
-                                        {message}
-                                    </p>
-                                ) : null}
-                            </div>
-                            {visibleCodex.canUpdate && !updating ? (
+                    <div role="group" aria-label={t('settings.machines.tools.title')} className="flex min-w-0 items-center gap-1.5 rounded-lg bg-[var(--app-bg)] px-2 py-1.5 sm:gap-2">
+                        <span className="shrink-0 font-medium text-[var(--app-fg)]">{visibleCodex?.name ?? 'Codex'}</span>
+                        {visibleCodex ? (
+                            <span className="shrink-0 whitespace-nowrap text-[var(--app-hint)]">{visibleCodex.installedVersion ?? '—'}</span>
+                        ) : null}
+                        {visibleCodex?.latestVersion && visibleCodex.latestVersion !== visibleCodex.installedVersion ? (
+                            <span className="truncate text-[var(--app-link)]" title={t('settings.machines.tools.available', { version: visibleCodex.latestVersion })}>
+                                → {visibleCodex.latestVersion}
+                            </span>
+                        ) : null}
+                        {message ? (
+                            <span role="status" title={message} className={`truncate ${!offline && visibleCodex?.state === 'failed' ? 'text-red-600 dark:text-red-400' : 'text-[var(--app-hint)]'}`}>
+                                {message}
+                            </span>
+                        ) : null}
+                        <div className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap sm:gap-2">
+                            <button type="button" onClick={checkUpdates} disabled={disabled || updating}
+                                className="text-[var(--app-link)] disabled:opacity-50">
+                                {query.isFetching || refreshMutation.isPending
+                                    ? t('settings.machines.tools.checking')
+                                    : t('settings.machines.tools.check')}
+                            </button>
+                            {visibleCodex?.canUpdate && !updating ? (
                                 <button type="button" onClick={updateCodex} disabled={disabled}
                                     aria-label={t('settings.machines.tools.updateNamed', { name: visibleCodex.name })}
-                                    className="shrink-0 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-link)] disabled:opacity-50">
+                                    title={t('settings.machines.tools.continuity')}
+                                    className="rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-link)] disabled:opacity-50">
                                     {t('settings.machines.tools.update')}
                                 </button>
                             ) : null}
                         </div>
-                    ) : null}
-                    {query.data && !visibleCodex ? (
-                        <p className="text-[var(--app-hint)]">{t('settings.machines.tools.empty')}</p>
-                    ) : null}
+                    </div>
                     {error || query.isError ? (
                         <p role="alert" className="text-red-600 dark:text-red-400">
                             {error ?? t('settings.machines.tools.checkFailed')}
